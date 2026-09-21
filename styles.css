@@ -245,7 +245,6 @@ kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5p
 .cm-live-bold { font-weight: 720; }
 .cm-live-italic { font-style: italic; }
 .cm-live-strike { text-decoration: line-through; opacity: .78; }
-.cm-live-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em; padding: .1em .32em; border: 1px solid var(--line); border-radius: 5px; background: var(--panel-2); }
 .cm-live-link { color: var(--accent); text-decoration: underline; text-underline-offset: .14em; }
 .cm-live-blockquote { border-left: 3px solid color-mix(in srgb, var(--accent) 55%, var(--line)); padding-left: 13px !important; color: var(--muted); }
 .cm-live-task-line { padding-top: 3px !important; padding-bottom: 3px !important; }
@@ -420,23 +419,8 @@ button.crumb:hover { color: var(--text); background: var(--panel-3); }
 .task-checkbox-widget { margin-left: 0; margin-right: 8px; }
 
 /* Rendered Markdown table in Live Preview. Click it to reveal/edit source. */
-.cm-table-widget {
-  display: block; width: 100%; margin: 10px 0 14px; overflow-x: auto;
-  border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); cursor: text;
-}
-.cm-table-widget table { width: 100%; border-collapse: collapse; font-family: inherit; font-size: .92rem; }
-.cm-table-widget th, .cm-table-widget td { padding: 8px 11px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); vertical-align: top; }
-.cm-table-widget th:last-child, .cm-table-widget td:last-child { border-right: 0; }
-.cm-table-widget tbody tr:last-child td { border-bottom: 0; }
-.cm-table-widget th { background: color-mix(in srgb, var(--panel-3) 70%, transparent); font-weight: 650; }
-.cm-table-widget tbody tr:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
 
 /* Code blocks: Obsidian-like card, language badge + copy action. */
-.cm-codeblock-widget {
-  display: block; width: 100%; margin: 11px 0 15px; overflow: hidden;
-  border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--panel-2) 92%, var(--panel));
-  box-shadow: 0 1px 0 rgba(0,0,0,.03); cursor: text;
-}
 .codeblock-head {
   height: 31px; display: flex; align-items: center; justify-content: space-between; gap: 10px;
   padding: 0 9px 0 12px; border-bottom: 1px solid var(--line); color: var(--muted);
@@ -447,7 +431,6 @@ button.crumb:hover { color: var(--text); background: var(--panel-3); }
 .codeblock-copy:hover { color: var(--text); background: var(--panel-2); }
 .cm-codeblock-widget pre { margin: 0; padding: 14px 16px 16px; overflow: auto; tab-size: 2; }
 .cm-codeblock-widget code { font: 13.5px/1.62 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; color: var(--text); white-space: pre; }
-.cm-live-code { padding: .08em .32em; border: 0; background: var(--panel-3); color: color-mix(in srgb, var(--text) 90%, var(--accent)); }
 .cm-duplicate-title-line { height: 0 !important; min-height: 0 !important; line-height: 0 !important; padding: 0 !important; overflow: hidden; }
 
 .graph-node { transition: opacity .12s ease; }
@@ -501,7 +484,6 @@ button.crumb:hover { color: var(--text); background: var(--panel-3); }
 .image-loading { min-height: 54px; display: flex; align-items: center; padding: 12px; border: 1px dashed var(--line); border-radius: 6px; color: var(--muted); font-size: .8rem; }
 .image-loading.error { color: var(--danger); }
 
-.cm-table-widget { margin-top: 12px; margin-bottom: 16px; }
 
 .tab-strip { display: flex; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .tab-strip::-webkit-scrollbar { display: none; }
@@ -517,3 +499,20 @@ button.crumb:hover { color: var(--text); background: var(--panel-3); }
 .note-tab:hover .tab-close, .note-tab.active .tab-close { opacity: .7; }
 .note-tab .tab-close:hover { opacity: 1; background: var(--panel-3); color: var(--text); }
 .note-tab .tab-dirty { color: var(--accent); font-size: 11px; line-height: 1; }
+
+/* v0.9: stable Live Preview — markers stay in the document to keep cursor movement smooth. */
+.cm-md-marker { opacity: .38; }
+.cm-image-widget { cursor: default; }
+.cm-image-widget .image-loading { padding: 10px 0; color: var(--muted); font-size: .9rem; }
+.cm-image-widget .image-loading.error { color: #ef6b73; }
+
+/* v0.9 editor simplification */
+.cm-image-source-line {
+  color: var(--muted);
+  opacity: .58;
+  font-size: .84em;
+}
+.cm-image-preview {
+  margin-top: 6px;
+  margin-bottom: 14px;
+}
