@@ -458,3 +458,62 @@ button.crumb:hover { color: var(--text); background: var(--panel-3); }
 @media (max-width: 980px) {
   .sidebar-resizer { display: none !important; }
 }
+
+/* v0.8 — stable Live Preview, persistent tabs, drag/drop, images */
+.tabs-left { overflow: hidden; }
+.tabs-container { display: flex; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.tabs-container::-webkit-scrollbar { display: none; }
+.vault-tab {
+  flex: 0 0 auto; max-width: 220px; height: 38px; border: 0; border-right: 1px solid var(--line);
+  padding: 0 10px; display: flex; align-items: center; gap: 6px; background: var(--panel); color: var(--muted); font-size: .8rem;
+}
+.vault-tab:hover { background: var(--panel-3); color: var(--text); }
+.vault-tab svg { width: 13px; height: 13px; flex: 0 0 auto; }
+.vault-tab span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-dirty-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
+.active-tab.dirty::after { content: "•"; color: var(--accent); margin-left: 3px; font-size: 15px; }
+
+.file-item[draggable="true"] { cursor: grab; }
+.file-item.dragging-note { opacity: .42; }
+.folder-row.drop-target { background: color-mix(in srgb, var(--accent) 18%, transparent); outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); }
+.file-list.drop-root { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--accent) 4%, transparent); }
+
+/* Native checkbox: only one clean square, marker and dash are replaced by the widget. */
+.task-checkbox-widget {
+  appearance: none; -webkit-appearance: none; width: 15px; height: 15px; margin: 0 8px 0 0; padding: 0;
+  border: 1.5px solid color-mix(in srgb, var(--muted) 78%, transparent); border-radius: 3px; background: transparent; cursor: pointer;
+  vertical-align: -2px; position: relative;
+}
+.task-checkbox-widget:checked { background: var(--accent); border-color: var(--accent); }
+.task-checkbox-widget:checked::after { content: "✓"; position: absolute; inset: -2px 0 0 1px; color: white; font-size: 11px; font-weight: 800; line-height: 15px; }
+.cm-live-task-line { padding-left: 0 !important; }
+
+/* Code blocks stay editable instead of becoming one blocking widget. */
+.cm-live-code-source-line { background: color-mix(in srgb, var(--panel-2) 92%, var(--panel)); padding-left: 14px !important; padding-right: 14px !important; }
+.cm-live-code-source-line:first-of-type { border-radius: 7px 7px 0 0; }
+.cm-live-code-source-text { font: 13.5px/1.62 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+.cm-live-code-fence-line { background: color-mix(in srgb, var(--panel-3) 72%, transparent); padding-left: 12px !important; color: var(--muted); }
+.cm-live-code-fence-text { font: 600 11px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
+.cm-live-raw-block-line { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+.cm-image-widget { margin: 12px 0 16px; max-width: 100%; }
+.cm-image-widget img { display: block; max-width: 100%; max-height: 70vh; object-fit: contain; border-radius: 6px; }
+.image-loading { min-height: 54px; display: flex; align-items: center; padding: 12px; border: 1px dashed var(--line); border-radius: 6px; color: var(--muted); font-size: .8rem; }
+.image-loading.error { color: var(--danger); }
+
+.cm-table-widget { margin-top: 12px; margin-bottom: 16px; }
+
+.tab-strip { display: flex; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.tab-strip::-webkit-scrollbar { display: none; }
+.note-tab {
+  flex: 0 0 auto; max-width: 230px; height: 38px; border: 0; border-right: 1px solid var(--line);
+  padding: 0 9px 0 10px; display: flex; align-items: center; gap: 6px; background: var(--panel); color: var(--muted); font-size: .8rem;
+}
+.note-tab.active { background: var(--bg); color: var(--text); }
+.note-tab:hover { background: var(--panel-3); color: var(--text); }
+.note-tab svg { width: 13px; height: 13px; flex: 0 0 auto; }
+.note-tab .tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-tab .tab-close { margin-left: 2px; width: 16px; height: 16px; border-radius: 3px; display: grid; place-items: center; opacity: 0; color: var(--muted); }
+.note-tab:hover .tab-close, .note-tab.active .tab-close { opacity: .7; }
+.note-tab .tab-close:hover { opacity: 1; background: var(--panel-3); color: var(--text); }
+.note-tab .tab-dirty { color: var(--accent); font-size: 11px; line-height: 1; }

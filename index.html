@@ -77,10 +77,7 @@
           <section id="primaryPane" class="note-pane primary-pane">
             <div class="tabbar">
               <div class="tabs-left">
-                <div class="active-tab">
-                  <svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h4"/></svg>
-                  <span id="activeNoteTitle">Новая вкладка</span>
-                </div>
+                <div id="tabStrip" class="tab-strip" aria-label="Открытые заметки"></div>
                 <button id="newTabBtn" class="new-tab-btn" title="Новая заметка · Ctrl+N" aria-label="Новая заметка">＋</button>
               </div>
               <div class="tab-actions">
@@ -240,6 +237,7 @@
 
     <!-- No visible import button: Ctrl+Alt+I -->
     <input id="vaultImport" type="file" webkitdirectory directory multiple hidden />
+    <input id="imageInput" type="file" accept="image/*" hidden />
     <div id="toast" class="toast hidden"></div>
   </div>
 

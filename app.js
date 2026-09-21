@@ -26,6 +26,12 @@ const state = {
   activePane: "primary",
   selectedFolder: "",
   secondary: { path: null, sha: null, mode: "live", editorView: null, syncing: false },
+  tabs: [],
+  activeTabId: null,
+  nextTabId: 1,
+  tabSeq: 0,
+  imageTargetPane: "primary",
+  mediaUrls: new Map(),
 };
 
 const $ = (id) => document.getElementById(id);
@@ -43,7 +49,7 @@ const els = {
   notesWorkspace: $("notesWorkspace"), graphWorkspace: $("graphWorkspace"), notesModeBtn: $("notesModeBtn"), graphModeBtn: $("graphModeBtn"),
   graphSvg: $("graphSvg"), graphLoading: $("graphLoading"), graphStats: $("graphStats"), graphRefreshBtn: $("graphRefreshBtn"), graphFitBtn: $("graphFitBtn"),
   graphSearch: $("graphSearch"), showMissingToggle: $("showMissingToggle"),
-  activeNoteTitle: $("activeNoteTitle"), searchRibbonBtn: $("searchRibbonBtn"), rightPanelBtn: $("rightPanelBtn"),
+  tabStrip: $("tabStrip"), searchRibbonBtn: $("searchRibbonBtn"), rightPanelBtn: $("rightPanelBtn"),
   contextSidebar: $("contextSidebar"), branchStatus: $("branchStatus"), syncStatus: $("syncStatus"),
   statusWords: $("statusWords"), statusChars: $("statusChars"),
   paneHost: $("paneHost"), primaryPane: $("primaryPane"), secondaryPane: $("secondaryPane"), paneSplitter: $("paneSplitter"), splitBtn: $("splitBtn"),
@@ -53,6 +59,7 @@ const els = {
   newTabBtn: $("newTabBtn"), newNoteSidebarBtn: $("newNoteSidebarBtn"), newFolderBtn: $("newFolderBtn"),
   pathBreadcrumb: $("pathBreadcrumb"), editPathBtn: $("editPathBtn"), secondaryPathBreadcrumb: $("secondaryPathBreadcrumb"), secondaryEditPathBtn: $("secondaryEditPathBtn"),
   leftSidebarResizer: $("leftSidebarResizer"), rightSidebarResizer: $("rightSidebarResizer"),
+  imageInput: $("imageInput"),
 };
 
 function headers(extra = {}) {
@@ -97,6 +104,143 @@ function showToast(text) {
   showToast.timer = setTimeout(() => els.toast.classList.add("hidden"), 2400);
 }
 
+function tabsStorageKey() {
+  return `pv_tabs:${state.owner}/${state.repo}`;
+}
+
+function activeTab() {
+  return state.tabs.find(t => t.id === state.activeTabId) || null;
+}
+
+function persistTabsWorkspace() {
+  if (!state.owner || !state.repo) return;
+  const paths = state.tabs.filter(t => !t.isNew && t.path).map(t => t.path);
+  const active = activeTab();
+  const payload = { paths: [...new Set(paths)], activePath: active && !active.isNew ? active.path : null };
+  try { localStorage.setItem(tabsStorageKey(), JSON.stringify(payload)); } catch {}
+}
+
+function syncActiveTabText(text = null) {
+  const tab = activeTab();
+  if (!tab) return;
+  const value = text == null ? getEditorMarkdown() : text;
+  tab.text = value;
+  tab.path = (els.pathInput?.value || tab.path || "").trim();
+  tab.sha = state.currentSha;
+  tab.dirty = tab.isNew || value !== (tab.savedText ?? value);
+  const el = els.tabStrip?.querySelector(`[data-tab-id="${tab.id}"]`);
+  el?.classList.toggle("dirty", !!tab.dirty);
+  const dot = el?.querySelector(".tab-dirty");
+  if (tab.dirty && !dot) { const d=document.createElement("span"); d.className="tab-dirty"; d.textContent="●"; el?.insertBefore(d, el.querySelector(".tab-close")); }
+  if (!tab.dirty && dot) dot.remove();
+}
+
+function captureActiveTab() {
+  const tab = activeTab();
+  if (!tab) return;
+  try { syncActiveTabText(); } catch {}
+}
+
+function renderTabs() {
+  if (!els.tabStrip) return;
+  els.tabStrip.innerHTML = "";
+  for (const tab of state.tabs) {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.dataset.tabId = tab.id;
+    el.className = `note-tab ${tab.id === state.activeTabId ? "active" : ""} ${tab.dirty ? "dirty" : ""}`;
+    el.title = tab.path || "Новая заметка";
+    el.innerHTML = `<svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h4"/></svg><span class="tab-title">${escapeHtml(noteName(tab.path || "Новая заметка.md"))}</span>${tab.dirty ? '<span class="tab-dirty">●</span>' : ''}<span class="tab-close" title="Закрыть">×</span>`;
+    el.addEventListener("click", e => { if (!e.target.closest(".tab-close")) activateTab(tab.id); });
+    el.querySelector(".tab-close")?.addEventListener("click", e => { e.stopPropagation(); closeTab(tab.id); });
+    els.tabStrip.appendChild(el);
+  }
+  requestAnimationFrame(() => els.tabStrip.querySelector(".note-tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" }));
+}
+
+async function hydrateTab(tab) {
+  if (!tab || !tab.path || !tab.unloaded) return tab;
+  const item = await getFile(tab.path);
+  tab.text = item.text;
+  tab.savedText = item.text;
+  tab.sha = item.sha;
+  tab.unloaded = false;
+  tab.dirty = false;
+  return tab;
+}
+
+async function activateTab(id) {
+  const next = state.tabs.find(t => t.id === id);
+  if (!next) return;
+  captureActiveTab();
+  try { await hydrateTab(next); } catch (e) { showToast(`Не удалось открыть вкладку: ${e.message}`); return; }
+  state.activeTabId = next.id;
+  state.current = next.isNew ? null : next.path;
+  state.currentSha = next.sha || null;
+  state.activePane = "primary";
+  els.primaryPane.classList.add("pane-active");
+  els.secondaryPane.classList.remove("pane-active");
+  updatePrimaryPathUI(next.path || "");
+  updateActiveNoteTitle(next.path || null);
+  setEditorMarkdown(next.text || "");
+  els.emptyState.classList.add("hidden");
+  els.editorView.classList.remove("hidden");
+  showPreview();
+  renderTabs();
+  renderFileList(els.searchInput.value);
+  if (!next.isNew && next.path) await Promise.all([renderBacklinks(next.path), renderOutgoing(next.text || "")]);
+  else { els.backlinksList.textContent = "—"; els.outgoingList.textContent = "—"; }
+  persistTabsWorkspace();
+}
+
+function addSavedTab(path, item, makeActive = true) {
+  let tab = state.tabs.find(t => !t.isNew && t.path === path);
+  if (!tab) {
+    tab = { id: `tab-${++state.tabSeq}`, path, sha: item?.sha || null, text: item?.text || "", savedText: item?.text || "", dirty: false, isNew: false, unloaded: !item };
+    state.tabs.push(tab);
+  } else if (item && !tab.dirty) {
+    tab.sha = item.sha; tab.text = item.text; tab.savedText = item.text; tab.unloaded = false;
+  }
+  if (makeActive) state.activeTabId = tab.id;
+  renderTabs(); persistTabsWorkspace();
+  return tab;
+}
+
+function addNewTab(path, text = "") {
+  const tab = { id: `tab-${++state.tabSeq}`, path, sha: null, text, savedText: "", dirty: true, isNew: true, unloaded: false };
+  state.tabs.push(tab); state.activeTabId = tab.id; renderTabs();
+  return tab;
+}
+
+async function closeTab(id) {
+  const idx = state.tabs.findIndex(t => t.id === id);
+  if (idx < 0) return;
+  const tab = state.tabs[idx];
+  if (tab.dirty && !confirm(`Закрыть «${noteName(tab.path || "Новая заметка.md")}» без сохранения?`)) return;
+  const wasActive = id === state.activeTabId;
+  state.tabs.splice(idx, 1);
+  if (wasActive) {
+    const fallback = state.tabs[Math.max(0, idx - 1)] || state.tabs[0] || null;
+    if (fallback) await activateTab(fallback.id);
+    else {
+      state.activeTabId = null; state.current = null; state.currentSha = null;
+      els.editorView.classList.add("hidden"); els.emptyState.classList.remove("hidden"); updateActiveNoteTitle(null); renderTabs();
+    }
+  } else renderTabs();
+  persistTabsWorkspace();
+}
+
+async function restoreTabsWorkspace() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(tabsStorageKey()) || "null"); } catch {}
+  if (!saved?.paths?.length) return;
+  const valid = saved.paths.filter(path => state.notes.some(n => n.path === path));
+  for (const path of valid) addSavedTab(path, null, false);
+  const targetPath = valid.includes(saved.activePath) ? saved.activePath : valid[0];
+  const target = state.tabs.find(t => t.path === targetPath);
+  if (target) await activateTab(target.id);
+}
+
 function updateDocumentStatus(text = "") {
   const plain = String(text).replace(/```[\s\S]*?```/g, " ").replace(/[#>*_`~\[\]()!-]/g, " ");
   const words = (plain.match(/[\p{L}\p{N}]+(?:[-’'][\p{L}\p{N}]+)*/gu) || []).length;
@@ -105,7 +249,10 @@ function updateDocumentStatus(text = "") {
 }
 
 function updateActiveNoteTitle(path = null) {
-  els.activeNoteTitle.textContent = path ? noteName(path) : "Новая вкладка";
+  const tab = activeTab();
+  if (tab && path) tab.path = path;
+  renderTabs();
+  persistTabsWorkspace();
 }
 
 function folderOf(path = "") {
@@ -195,6 +342,14 @@ function openNoteInActivePane(path) {
 }
 
 function attachFileOpenHandlers(button, path) {
+  button.draggable = true;
+  button.addEventListener("dragstart", e => {
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/private-vault-note", path);
+    e.dataTransfer.setData("text/plain", path);
+    button.classList.add("dragging-note");
+  });
+  button.addEventListener("dragend", () => button.classList.remove("dragging-note"));
   button.onclick = () => openNoteInActivePane(path);
   button.oncontextmenu = e => {
     e.preventDefault();
@@ -297,6 +452,7 @@ async function connect() {
 
     els.loginView.classList.add("hidden");
     els.appView.classList.remove("hidden");
+    await restoreTabsWorkspace();
   } catch (e) {
     els.loginError.textContent = `Не удалось подключиться: ${e.message}`;
   } finally {
@@ -387,6 +543,13 @@ function renderFileList(filter = "") {
       row.innerHTML = `<span class="folder-chevron">›</span><svg class="tree-icon folder-icon" viewBox="0 0 24 24"><path d="M3.5 6.5h6l2 2H20.5v9.5H3.5z"/></svg><span class="folder-name">${escapeHtml(name)}</span>`;
       const children = document.createElement("div");
       children.className = `folder-children ${open ? "open" : ""}`;
+      row.addEventListener("dragover", e => { if (Array.from(e.dataTransfer.types || []).includes("text/private-vault-note")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; row.classList.add("drop-target"); } });
+      row.addEventListener("dragleave", () => row.classList.remove("drop-target"));
+      row.addEventListener("drop", e => {
+        e.preventDefault(); e.stopPropagation(); row.classList.remove("drop-target");
+        const path = e.dataTransfer.getData("text/private-vault-note") || e.dataTransfer.getData("text/plain");
+        if (path) moveNoteToFolder(path, folder.path);
+      });
       row.onclick = () => {
         state.selectedFolder = folder.path;
         if (state.expandedFolders.has(folder.path)) state.expandedFolders.delete(folder.path);
@@ -436,20 +599,15 @@ async function getFile(path) {
 async function openNote(path) {
   setMode("notes");
   try {
-    const item = await getFile(path);
-    state.current = path;
-    state.currentSha = item.sha;
-    state.activePane = "primary";
-    els.primaryPane.classList.add("pane-active");
-    els.secondaryPane.classList.remove("pane-active");
-    updatePrimaryPathUI(path);
-    updateActiveNoteTitle(path);
-    setEditorMarkdown(item.text);
-    els.emptyState.classList.add("hidden");
-    els.editorView.classList.remove("hidden");
-    showPreview();
-    renderFileList(els.searchInput.value);
-    await Promise.all([renderBacklinks(path), renderOutgoing(item.text)]);
+    captureActiveTab();
+    let tab = state.tabs.find(t => !t.isNew && t.path === path);
+    if (!tab) {
+      const item = await getFile(path);
+      tab = addSavedTab(path, item, false);
+    } else if (tab.unloaded) {
+      await hydrateTab(tab);
+    }
+    await activateTab(tab.id);
     els.sidebar.classList.remove("open");
     setSyncStatus("Готово");
   } catch (e) {
@@ -515,27 +673,26 @@ class WikiLinkWidget extends WidgetType {
 
 function selectionTouches(view, from, to) {
   const sel = view.state.selection.main;
-  return sel.from <= to && sel.to >= from;
+  if (sel.from === sel.to) return sel.from > from && sel.from < to;
+  return sel.from < to && sel.to > from;
 }
 
 class TaskCheckboxWidget extends WidgetType {
-  constructor(checked, from, to, bullet = "-") { super(); this.checked = checked; this.from = from; this.to = to; this.bullet = bullet; }
-  eq(other) { return other.checked === this.checked && other.from === this.from && other.to === this.to && other.bullet === this.bullet; }
+  constructor(checked, checkPos) { super(); this.checked = checked; this.checkPos = checkPos; }
+  eq(other) { return other.checked === this.checked && other.checkPos === this.checkPos; }
   toDOM(view) {
-    const box = document.createElement("button");
-    box.type = "button";
-    box.className = `task-checkbox-widget ${this.checked ? "checked" : ""}`;
-    box.textContent = this.checked ? "✓" : "";
-    box.setAttribute("aria-label", this.checked ? "Выполнено" : "Не выполнено");
-    box.setAttribute("aria-pressed", this.checked ? "true" : "false");
-    box.addEventListener("mousedown", e => { e.preventDefault(); e.stopPropagation(); });
-    box.addEventListener("click", e => {
-      e.preventDefault();
-      e.stopPropagation();
-      view.dispatch({ changes: { from: this.from, to: this.to, insert: `${this.bullet} [${this.checked ? " " : "x"}]` } });
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.className = "task-checkbox-widget";
+    input.checked = this.checked;
+    input.setAttribute("aria-label", this.checked ? "Выполнено" : "Не выполнено");
+    input.addEventListener("mousedown", e => { e.preventDefault(); e.stopPropagation(); });
+    input.addEventListener("click", e => {
+      e.preventDefault(); e.stopPropagation();
+      view.dispatch({ changes: { from: this.checkPos, to: this.checkPos + 1, insert: this.checked ? " " : "x" } });
       view.focus();
     });
-    return box;
+    return input;
   }
   ignoreEvent() { return false; }
 }
@@ -560,6 +717,75 @@ class TableWidget extends WidgetType {
     const tbody = document.createElement("tbody");
     body.forEach(row => { const tr = document.createElement("tr"); header.forEach((_, i) => { const td = document.createElement("td"); td.textContent = row[i] || ""; td.style.textAlign = align[i] || "left"; tr.appendChild(td); }); tbody.appendChild(tr); });
     table.appendChild(tbody); wrap.appendChild(table);
+    wrap.addEventListener("mousedown", e => e.preventDefault());
+    wrap.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); view.dispatch({ selection: { anchor: Math.min(this.from + 1, this.to) }, scrollIntoView: true }); view.focus(); });
+    return wrap;
+  }
+  ignoreEvent() { return false; }
+}
+
+
+function imageMime(path) {
+  const ext = String(path).split(".").pop().toLowerCase();
+  return ({ png:"image/png", jpg:"image/jpeg", jpeg:"image/jpeg", webp:"image/webp", gif:"image/gif", svg:"image/svg+xml", avif:"image/avif", bmp:"image/bmp" })[ext] || "application/octet-stream";
+}
+
+function base64ToBytes(base64) {
+  const binary = atob(String(base64).replace(/\s/g, ""));
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+function resolveImageRepoPath(target, notePath = "") {
+  let clean = String(target || "").trim().replace(/^<|>$/g, "");
+  try { clean = decodeURIComponent(clean); } catch {}
+  if (/^(https?:|data:|blob:)/i.test(clean)) return { external: true, path: clean };
+  clean = clean.replace(/^\.\//, "").replace(/\\/g, "/");
+  const exact = state.files.find(f => f.path === clean);
+  if (exact) return { external: false, path: exact.path };
+  const rel = normalizeRepoPath(`${folderOf(notePath)}/${clean}`);
+  const relative = state.files.find(f => f.path === rel);
+  if (relative) return { external: false, path: relative.path };
+  const name = clean.split("/").pop().toLowerCase();
+  const byName = state.files.filter(f => f.path.split("/").pop().toLowerCase() === name);
+  if (byName.length === 1) return { external: false, path: byName[0].path };
+  return { external: false, path: clean };
+}
+
+async function privateImageUrl(path) {
+  if (state.mediaUrls.has(path)) return state.mediaUrls.get(path);
+  const file = state.files.find(f => f.path === path);
+  if (!file) throw new Error(`Изображение не найдено: ${path}`);
+  const b64 = await getBlobBase64(file.sha);
+  const blob = new Blob([base64ToBytes(b64)], { type: imageMime(path) });
+  const url = URL.createObjectURL(blob);
+  state.mediaUrls.set(path, url);
+  return url;
+}
+
+class ImageWidget extends WidgetType {
+  constructor(target, alt, width, notePath, from, to) { super(); this.target = target; this.alt = alt || ""; this.width = width || null; this.notePath = notePath || ""; this.from = from; this.to = to; }
+  eq(other) { return other.target === this.target && other.alt === this.alt && other.width === this.width && other.notePath === this.notePath; }
+  toDOM(view) {
+    const wrap = document.createElement("figure");
+    wrap.className = "cm-image-widget";
+    const status = document.createElement("div");
+    status.className = "image-loading";
+    status.textContent = "Загрузка изображения…";
+    wrap.appendChild(status);
+    const resolved = resolveImageRepoPath(this.target, this.notePath);
+    const show = url => {
+      const img = document.createElement("img");
+      img.alt = this.alt || this.target.split("/").pop();
+      if (this.width) img.style.maxWidth = `${Math.max(80, Math.min(1600, Number(this.width) || 600))}px`;
+      img.src = url;
+      img.onload = () => { status.remove(); wrap.appendChild(img); };
+      img.onerror = () => { status.textContent = `Не удалось открыть ${this.target}`; status.classList.add("error"); };
+    };
+    if (resolved.external) show(resolved.path);
+    else privateImageUrl(resolved.path).then(show).catch(() => { status.textContent = `Изображение не найдено: ${this.target}`; status.classList.add("error"); });
+    wrap.title = "Кликни, чтобы редактировать Markdown изображения";
     wrap.addEventListener("mousedown", e => e.preventDefault());
     wrap.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); view.dispatch({ selection: { anchor: Math.min(this.from + 1, this.to) }, scrollIntoView: true }); view.focus(); });
     return wrap;
@@ -597,6 +823,15 @@ class CodeBlockWidget extends WidgetType {
   ignoreEvent() { return false; }
 }
 
+function splitMarkdownTableRow(line) {
+  return String(line).trim().replace(/^\|/, "").replace(/\|$/, "").split(/(?<!\\)\|/).map(x => x.replace(/\\\|/g, "|").trim());
+}
+
+function isMarkdownTableSeparator(line) {
+  const cells = splitMarkdownTableRow(line);
+  return cells.length >= 2 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
+}
+
 function detectLiveBlocks(text) {
   const lines = String(text).split("\n");
   const starts = [];
@@ -612,14 +847,23 @@ function detectLiveBlocks(text) {
       if (j < lines.length) {
         const from = starts[i];
         const to = starts[j] + lines[j].length;
-        blocks.push({ type: "code", from, to, language: fence[2] || "text", code: lines.slice(i + 1, j).join("\n"), text: text.slice(from, to) });
+        blocks.push({ type: "code", from, to, startLine: i + 1, endLine: j + 1, language: fence[2] || "text", code: lines.slice(i + 1, j).join("\n"), text: text.slice(from, to) });
         i = j;
         continue;
       }
     }
+
+    const obsidianImage = lines[i].match(/^\s*!\[\[([^\]|]+\.(?:png|jpe?g|gif|webp|svg|avif|bmp))(?:\|(\d+))?\]\]\s*$/i);
+    const markdownImage = lines[i].match(/^\s*!\[([^\]]*)\]\(([^)]+\.(?:png|jpe?g|gif|webp|svg|avif|bmp)(?:\?[^)]*)?)\)\s*$/i);
+    if (obsidianImage || markdownImage) {
+      const from = starts[i], to = starts[i] + lines[i].length;
+      blocks.push({ type: "image", from, to, target: obsidianImage ? obsidianImage[1] : markdownImage[2], alt: obsidianImage ? "" : markdownImage[1], width: obsidianImage ? obsidianImage[2] : null, text: lines[i] });
+      continue;
+    }
+
     const next = lines[i + 1] || "";
-    const isTableHead = lines[i].includes("|") && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(next);
-    if (isTableHead) {
+    const headerCells = splitMarkdownTableRow(lines[i]);
+    if (headerCells.length >= 2 && lines[i].includes("|") && isMarkdownTableSeparator(next)) {
       let j = i + 2;
       while (j < lines.length && lines[j].trim() && lines[j].includes("|")) j++;
       const last = Math.max(i + 1, j - 1);
@@ -638,18 +882,24 @@ function buildLiveDecorations(view) {
   const doc = view.state.doc;
   const fullText = doc.toString();
   const blocks = detectLiveBlocks(fullText);
+  const codeBlocks = blocks.filter(b => b.type === "code");
   const collapsed = [];
+  const viewPath = els.secondaryLiveEditorHost?.contains(view.dom) ? state.secondary.path : (els.pathInput?.value || state.current || "");
 
   for (const block of blocks) {
+    if (block.type === "code") continue;
     const visible = view.visibleRanges.some(vr => block.to >= vr.from && block.from <= vr.to);
     if (!visible || selectionTouches(view, block.from, block.to)) continue;
-    const widget = block.type === "table"
-      ? new TableWidget(block.text, block.from, block.to)
-      : new CodeBlockWidget(block.language, block.code, block.from, block.to);
+    let widget = null;
+    if (block.type === "table") widget = new TableWidget(block.text, block.from, block.to);
+    if (block.type === "image") widget = new ImageWidget(block.target, block.alt, block.width, viewPath, block.from, block.to);
+    if (!widget) continue;
     ranges.push(Decoration.replace({ widget, block: true, inclusive: false }).range(block.from, block.to));
     collapsed.push([block.from, block.to]);
   }
   const insideCollapsed = (from, to) => collapsed.some(([a,b]) => from < b && to > a);
+  const containingCode = (from, to) => codeBlocks.find(b => from >= b.from && to <= b.to);
+  const containingSpecialRaw = (from, to) => blocks.find(b => b.type !== "code" && selectionTouches(view, b.from, b.to) && from >= b.from && to <= b.to);
 
   for (const vr of view.visibleRanges) {
     let pos = vr.from;
@@ -660,100 +910,109 @@ function buildLiveDecorations(view) {
         const text = line.text;
         const base = line.from;
         if (insideCollapsed(line.from, line.to)) {
-          // Entire table/code block is rendered by one widget.
+          // Rendered by a block widget.
         } else {
-          const wikiSpans = [];
-          const wikiRe = /\[\[([^\]]+)\]\]/g;
-          let wm;
-          while ((wm = wikiRe.exec(text)) !== null) {
-            const from = base + wm.index, to = from + wm[0].length;
-            wikiSpans.push([from, to]);
-            const resolved = wikiTargetToPath(wm[1]);
-            if (selectionTouches(view, from, to)) ranges.push(Decoration.mark({ class: `cm-live-wiki-raw ${resolved ? "" : "missing"}` }).range(from, to));
-            else ranges.push(Decoration.replace({ widget: new WikiLinkWidget(wm[1], resolved), inclusive: false }).range(from, to));
-          }
-          const overlapsWiki = (from, to) => wikiSpans.some(([a,b]) => from < b && to > a);
+          const codeBlock = containingCode(line.from, line.to);
+          if (codeBlock) {
+            const isOpen = line.from === codeBlock.from;
+            const isClose = line.to === codeBlock.to;
+            ranges.push(Decoration.line({ class: isOpen || isClose ? "cm-live-code-fence-line" : "cm-live-code-source-line" }).range(base));
+            if (line.from < line.to) ranges.push(Decoration.mark({ class: isOpen || isClose ? "cm-live-code-fence-text" : "cm-live-code-source-text" }).range(line.from, line.to));
+          } else if (containingSpecialRaw(line.from, line.to)) {
+            ranges.push(Decoration.line({ class: "cm-live-raw-block-line" }).range(base));
+          } else {
+            const wikiSpans = [];
+            const wikiRe = /\[\[([^\]]+)\]\]/g;
+            let wm;
+            while ((wm = wikiRe.exec(text)) !== null) {
+              const from = base + wm.index, to = from + wm[0].length;
+              wikiSpans.push([from, to]);
+              const resolved = wikiTargetToPath(wm[1]);
+              if (selectionTouches(view, from, to)) ranges.push(Decoration.mark({ class: `cm-live-wiki-raw ${resolved ? "" : "missing"}` }).range(from, to));
+              else ranges.push(Decoration.replace({ widget: new WikiLinkWidget(wm[1], resolved), inclusive: false }).range(from, to));
+            }
+            const overlapsWiki = (from, to) => wikiSpans.some(([a,b]) => from < b && to > a);
 
-          const hm = text.match(/^(#{1,6})\s+/);
-          const viewPath = els.secondaryLiveEditorHost?.contains(view.dom) ? state.secondary.path : state.current;
-          const duplicateTitle = !!(hm && hm[1].length === 1 && line.number === 1 && viewPath && text.slice(hm[0].length).trim() === noteName(viewPath));
-          if (duplicateTitle && !selectionTouches(view, line.from, line.to)) {
-            ranges.push(Decoration.replace({}).range(line.from, line.to));
-            ranges.push(Decoration.line({ class: "cm-duplicate-title-line" }).range(base));
-          } else if (hm) {
-            const markerTo = base + hm[0].length, level = hm[1].length;
-            ranges.push(Decoration.line({ class: `cm-live-heading-line cm-live-heading-${level}` }).range(base));
-            if (!selectionTouches(view, base, markerTo)) ranges.push(Decoration.replace({}).range(base, markerTo));
-            else ranges.push(Decoration.mark({ class: "cm-md-marker" }).range(base, markerTo));
-            if (markerTo < line.to) ranges.push(Decoration.mark({ class: `cm-live-heading-text cm-live-h${level}` }).range(markerTo, line.to));
-          }
+            const hm = text.match(/^(#{1,6})\s+/);
+            const duplicateTitle = !!(hm && hm[1].length === 1 && line.number === 1 && viewPath && text.slice(hm[0].length).trim() === noteName(viewPath));
+            if (duplicateTitle && !selectionTouches(view, line.from, line.to)) {
+              ranges.push(Decoration.replace({}).range(line.from, line.to));
+              ranges.push(Decoration.line({ class: "cm-duplicate-title-line" }).range(base));
+            } else if (hm) {
+              const markerTo = base + hm[0].length, level = hm[1].length;
+              ranges.push(Decoration.line({ class: `cm-live-heading-line cm-live-heading-${level}` }).range(base));
+              if (!selectionTouches(view, base, markerTo)) ranges.push(Decoration.replace({}).range(base, markerTo));
+              else ranges.push(Decoration.mark({ class: "cm-md-marker" }).range(base, markerTo));
+              if (markerTo < line.to) ranges.push(Decoration.mark({ class: `cm-live-heading-text cm-live-h${level}` }).range(markerTo, line.to));
+            }
 
-          const qm = text.match(/^(\s*)>\s?/);
-          if (qm) {
-            const markerFrom = base + qm[1].length, markerTo = base + qm[0].length;
-            ranges.push(Decoration.line({ class: "cm-live-blockquote" }).range(base));
-            if (!selectionTouches(view, markerFrom, markerTo)) ranges.push(Decoration.replace({}).range(markerFrom, markerTo));
-          }
+            const qm = text.match(/^(\s*)>\s?/);
+            if (qm) {
+              const markerFrom = base + qm[1].length, markerTo = base + qm[0].length;
+              ranges.push(Decoration.line({ class: "cm-live-blockquote" }).range(base));
+              if (!selectionTouches(view, markerFrom, markerTo)) ranges.push(Decoration.replace({}).range(markerFrom, markerTo));
+            }
 
-          const boldRe = /(\*\*|__)([^\n]+?)\1/g; let bm;
-          while ((bm = boldRe.exec(text)) !== null) {
-            const from = base + bm.index, openTo = from + bm[1].length, innerTo = openTo + bm[2].length, to = innerTo + bm[1].length;
-            if (overlapsWiki(from, to)) continue;
-            ranges.push(Decoration.mark({ class: "cm-live-bold" }).range(openTo, innerTo));
-            if (!selectionTouches(view, from, to)) { ranges.push(Decoration.replace({}).range(from, openTo)); ranges.push(Decoration.replace({}).range(innerTo, to)); }
-            else { ranges.push(Decoration.mark({ class: "cm-md-marker" }).range(from, openTo)); ranges.push(Decoration.mark({ class: "cm-md-marker" }).range(innerTo, to)); }
-          }
-
-          const italicRe = /(\*|_)([^\n]+?)\1/g; let im;
-          while ((im = italicRe.exec(text)) !== null) {
-            const from = base + im.index, to = from + im[0].length, prev = text[im.index - 1] || "", next = text[im.index + im[0].length] || "";
-            if (prev === im[1] || next === im[1] || overlapsWiki(from, to)) continue;
-            const innerFrom = from + 1, innerTo = to - 1;
-            ranges.push(Decoration.mark({ class: "cm-live-italic" }).range(innerFrom, innerTo));
-            if (!selectionTouches(view, from, to)) { ranges.push(Decoration.replace({}).range(from, innerFrom)); ranges.push(Decoration.replace({}).range(innerTo, to)); }
-          }
-
-          for (const [re, cls, marker] of [[/~~([^\n]+?)~~/g, "cm-live-strike", 2], [/`([^`\n]+?)`/g, "cm-live-code", 1]]) {
-            let m; while ((m = re.exec(text)) !== null) {
-              const from = base + m.index, to = from + m[0].length;
+            const boldRe = /(\*\*|__)([^\n]+?)\1/g; let bm;
+            while ((bm = boldRe.exec(text)) !== null) {
+              const from = base + bm.index, openTo = from + bm[1].length, innerTo = openTo + bm[2].length, to = innerTo + bm[1].length;
               if (overlapsWiki(from, to)) continue;
-              const innerFrom = from + marker, innerTo = to - marker;
-              ranges.push(Decoration.mark({ class: cls }).range(innerFrom, innerTo));
+              ranges.push(Decoration.mark({ class: "cm-live-bold" }).range(openTo, innerTo));
+              if (!selectionTouches(view, from, to)) { ranges.push(Decoration.replace({}).range(from, openTo)); ranges.push(Decoration.replace({}).range(innerTo, to)); }
+              else { ranges.push(Decoration.mark({ class: "cm-md-marker" }).range(from, openTo)); ranges.push(Decoration.mark({ class: "cm-md-marker" }).range(innerTo, to)); }
+            }
+
+            const italicRe = /(\*|_)([^\n]+?)\1/g; let im;
+            while ((im = italicRe.exec(text)) !== null) {
+              const from = base + im.index, to = from + im[0].length, prev = text[im.index - 1] || "", next = text[im.index + im[0].length] || "";
+              if (prev === im[1] || next === im[1] || overlapsWiki(from, to)) continue;
+              const innerFrom = from + 1, innerTo = to - 1;
+              ranges.push(Decoration.mark({ class: "cm-live-italic" }).range(innerFrom, innerTo));
               if (!selectionTouches(view, from, to)) { ranges.push(Decoration.replace({}).range(from, innerFrom)); ranges.push(Decoration.replace({}).range(innerTo, to)); }
             }
-          }
 
-          const highlightRe = /==([^\n]+?)==/g; let hlm;
-          while ((hlm = highlightRe.exec(text)) !== null) {
-            const from = base + hlm.index, to = from + hlm[0].length, innerFrom = from + 2, innerTo = to - 2;
-            if (overlapsWiki(from, to)) continue;
-            ranges.push(Decoration.mark({ class: "cm-live-highlight" }).range(innerFrom, innerTo));
-            if (!selectionTouches(view, from, to)) { ranges.push(Decoration.replace({}).range(from, innerFrom)); ranges.push(Decoration.replace({}).range(innerTo, to)); }
-          }
+            for (const [re, cls, marker] of [[/~~([^\n]+?)~~/g, "cm-live-strike", 2], [/`([^`\n]+?)`/g, "cm-live-code", 1]]) {
+              let m; while ((m = re.exec(text)) !== null) {
+                const from = base + m.index, to = from + m[0].length;
+                if (overlapsWiki(from, to)) continue;
+                const innerFrom = from + marker, innerTo = to - marker;
+                ranges.push(Decoration.mark({ class: cls }).range(innerFrom, innerTo));
+                if (!selectionTouches(view, from, to)) { ranges.push(Decoration.replace({}).range(from, innerFrom)); ranges.push(Decoration.replace({}).range(innerTo, to)); }
+              }
+            }
 
-          const underlineRe = /<u>([^\n]+?)<\/u>/gi; let ulm;
-          while ((ulm = underlineRe.exec(text)) !== null) {
-            const from = base + ulm.index, to = from + ulm[0].length, innerFrom = from + 3, innerTo = to - 4;
-            ranges.push(Decoration.mark({ class: "cm-live-underline" }).range(innerFrom, innerTo));
-            if (!selectionTouches(view, from, to)) { ranges.push(Decoration.replace({}).range(from, innerFrom)); ranges.push(Decoration.replace({}).range(innerTo, to)); }
-          }
+            const highlightRe = /==([^\n]+?)==/g; let hlm;
+            while ((hlm = highlightRe.exec(text)) !== null) {
+              const from = base + hlm.index, to = from + hlm[0].length, innerFrom = from + 2, innerTo = to - 2;
+              if (overlapsWiki(from, to)) continue;
+              ranges.push(Decoration.mark({ class: "cm-live-highlight" }).range(innerFrom, innerTo));
+              if (!selectionTouches(view, from, to)) { ranges.push(Decoration.replace({}).range(from, innerFrom)); ranges.push(Decoration.replace({}).range(innerTo, to)); }
+            }
 
-          const linkRe = /\[([^\]\n]+)\]\(([^)\n]+)\)/g; let lm;
-          while ((lm = linkRe.exec(text)) !== null) {
-            const from = base + lm.index, labelFrom = from + 1, labelTo = labelFrom + lm[1].length, to = from + lm[0].length;
-            if (overlapsWiki(from, to)) continue;
-            ranges.push(Decoration.mark({ class: "cm-live-link" }).range(labelFrom, labelTo));
-            if (!selectionTouches(view, from, to)) { ranges.push(Decoration.replace({}).range(from, labelFrom)); ranges.push(Decoration.replace({}).range(labelTo, to)); }
-          }
+            const underlineRe = /<u>([^\n]+?)<\/u>/gi; let ulm;
+            while ((ulm = underlineRe.exec(text)) !== null) {
+              const from = base + ulm.index, to = from + ulm[0].length, innerFrom = from + 3, innerTo = to - 4;
+              ranges.push(Decoration.mark({ class: "cm-live-underline" }).range(innerFrom, innerTo));
+              if (!selectionTouches(view, from, to)) { ranges.push(Decoration.replace({}).range(from, innerFrom)); ranges.push(Decoration.replace({}).range(innerTo, to)); }
+            }
 
-          // Task list: replace both the list dash and [ ] marker with one clean square checkbox.
-          const taskMatch = text.match(/^(\s*)([-*+])\s+\[([ xX])\](\s+)/);
-          if (taskMatch) {
-            ranges.push(Decoration.line({ class: "cm-live-task-line" }).range(base));
-            const markerFrom = base + taskMatch[1].length;
-            const markerTo = base + taskMatch[0].length - taskMatch[4].length;
-            if (!selectionTouches(view, markerFrom, markerTo)) ranges.push(Decoration.replace({ widget: new TaskCheckboxWidget(/[xX]/.test(taskMatch[3]), markerFrom, markerTo, taskMatch[2]) }).range(markerFrom, markerTo));
-          } else if (/^\s*[-*+]\s+/.test(text) || /^\s*\d+[.)]\s+/.test(text)) ranges.push(Decoration.line({ class: "cm-live-list-line" }).range(base));
+            const linkRe = /\[([^\]\n]+)\]\(([^)\n]+)\)/g; let lm;
+            while ((lm = linkRe.exec(text)) !== null) {
+              const from = base + lm.index, labelFrom = from + 1, labelTo = labelFrom + lm[1].length, to = from + lm[0].length;
+              if (overlapsWiki(from, to)) continue;
+              ranges.push(Decoration.mark({ class: "cm-live-link" }).range(labelFrom, labelTo));
+              if (!selectionTouches(view, from, to)) { ranges.push(Decoration.replace({}).range(from, labelFrom)); ranges.push(Decoration.replace({}).range(labelTo, to)); }
+            }
+
+            const taskMatch = text.match(/^(\s*)([-*+])\s+\[([ xX])\](\s+)/);
+            if (taskMatch) {
+              ranges.push(Decoration.line({ class: "cm-live-task-line" }).range(base));
+              const markerFrom = base + taskMatch[1].length;
+              const markerTo = base + taskMatch[0].length - taskMatch[4].length;
+              const checkPos = base + taskMatch[0].indexOf("[") + 1;
+              if (!selectionTouches(view, markerFrom, markerTo)) ranges.push(Decoration.replace({ widget: new TaskCheckboxWidget(/[xX]/.test(taskMatch[3]), checkPos), inclusive: false }).range(markerFrom, markerTo));
+            } else if (/^\s*[-*+]\s+/.test(text) || /^\s*\d+[.)]\s+/.test(text)) ranges.push(Decoration.line({ class: "cm-live-list-line" }).range(base));
+          }
         }
       }
       if (line.to >= doc.length || line.to >= vr.to) break;
@@ -790,6 +1049,7 @@ function initLiveEditor() {
         if (update.docChanged) {
           const value = update.state.doc.toString();
           els.editorText.value = value;
+          syncActiveTabText(value);
           renderOutgoing(value);
           updateDocumentStatus(value);
         }
@@ -942,11 +1202,11 @@ function secondaryToolbarAction(action) {
   if (action === "highlight") return secondaryReplaceSelection("==", "==", "выделенный текст");
   if (action === "link") return secondaryReplaceSelection("[", "](https://)", "текст ссылки");
   if (action === "inlinecode") return secondaryReplaceSelection("`", "`", "код");
-  if (action === "codeblock") { const lang = (prompt("Язык блока кода (например: javascript, python, glsl). Можно оставить пустым.", "") || "").trim(); return secondaryReplaceSelection("```" + lang + "\n", "\n```", "код"); }
-  if (action === "image") { const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, "![описание](путь-к-изображению)"); return; }
+  if (action === "codeblock") { const lang = (prompt("Язык блока кода (например: javascript, python, glsl). Можно оставить пустым.", "") || "").trim(); return secondaryReplaceSelection("```" + lang + "\n", "\n```\n\n", "код"); }
+  if (action === "image") return requestImageInsert("secondary");
   if (action === "hr") { const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, "\n---\n"); return; }
   if (action === "fullscreen") { document.body.classList.toggle("focus-mode"); return; }
-  if (action === "table") { const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, "| Столбец 1 | Столбец 2 |\n| --- | --- |\n| Значение | Значение |\n\n"); return; }
+  if (action === "table") { const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, "\n| Столбец 1 | Столбец 2 |\n| --- | --- |\n| Значение | Значение |\n\n"); return; }
   if (action === "quote") return secondaryPrefixLines(() => "> ");
   if (action === "wiki") { const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, "[[]]", sel.start + 2); return; }
   if (action === "h1") return secondaryPrefixLines(() => "# ");
@@ -1056,12 +1316,18 @@ async function saveCurrent() {
     });
     state.current = saved.path;
     state.currentSha = saved.sha;
+    const tab = activeTab();
+    if (tab) {
+      tab.path = saved.path; tab.sha = saved.sha; tab.text = markdownText; tab.savedText = markdownText;
+      tab.isNew = false; tab.unloaded = false; tab.dirty = false;
+    }
     updatePrimaryPathUI(saved.path);
     updateActiveNoteTitle(saved.path);
     state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
     await loadTree();
     state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
     await Promise.all([renderBacklinks(saved.path), renderOutgoing(markdownText)]);
+    renderTabs(); persistTabsWorkspace();
     setSyncStatus("Сохранено");
     showToast("Сохранено в GitHub.");
   } catch (e) {
@@ -1103,12 +1369,14 @@ function suggestedNewNotePath() {
 }
 
 function newNote(path = suggestedNewNotePath()) {
+  captureActiveTab();
+  path = path.toLowerCase().endsWith(".md") ? path : `${path}.md`;
+  const tab = addNewTab(path, "");
   state.current = null;
   state.currentSha = null;
   state.activePane = "primary";
   els.primaryPane.classList.add("pane-active");
   els.secondaryPane.classList.remove("pane-active");
-  path = path.toLowerCase().endsWith(".md") ? path : `${path}.md`;
   updatePrimaryPathUI(path);
   updateActiveNoteTitle(path);
   setEditorMarkdown("");
@@ -1120,6 +1388,7 @@ function newNote(path = suggestedNewNotePath()) {
   showPreview();
   els.sidebar.classList.remove("open");
   setSyncStatus("Новая заметка");
+  renderTabs();
   setTimeout(() => state.editorView?.focus(), 0);
 }
 
@@ -1190,6 +1459,57 @@ async function relocateFile(oldPath, newPath, { copy = false } = {}) {
   return newPath;
 }
 
+function fileToBase64(file) {
+  return file.arrayBuffer().then(buf => {
+    const bytes = new Uint8Array(buf); let binary = ""; const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    return btoa(binary);
+  });
+}
+
+function uniqueAssetPath(path) {
+  if (!existingFile(path)) return path;
+  const dot = path.lastIndexOf(".");
+  const base = dot > path.lastIndexOf("/") ? path.slice(0, dot) : path;
+  const ext = dot > path.lastIndexOf("/") ? path.slice(dot) : "";
+  let n = 2, candidate = `${base}-${n}${ext}`;
+  while (existingFile(candidate)) candidate = `${base}-${++n}${ext}`;
+  return candidate;
+}
+
+function requestImageInsert(pane = "primary") {
+  state.imageTargetPane = pane;
+  els.imageInput.value = "";
+  els.imageInput.click();
+}
+
+async function uploadImageForPane(file, pane = "primary") {
+  if (!file) return;
+  try {
+    setSyncStatus("Загрузка изображения…");
+    const notePath = pane === "secondary" ? (els.secondaryPathInput.value.trim() || state.secondary.path || "") : (els.pathInput.value.trim() || state.current || "");
+    const baseFolder = folderOf(notePath) || state.selectedFolder || "";
+    const safeName = file.name.replace(/[\\/]+/g, "-");
+    let path = uniqueAssetPath(`${baseFolder ? baseFolder + "/" : ""}attachments/${safeName}`);
+    const b64 = await fileToBase64(file);
+    await putBase64File(path, b64, `Add image ${path}`);
+    await loadTree();
+    const markdown = `![[${path}]]\n\n`;
+    if (pane === "secondary") {
+      const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, markdown, sel.start + markdown.length);
+    } else insertAtCursor(markdown);
+    setSyncStatus("Готово"); showToast("Изображение загружено и вставлено.");
+  } catch (e) { setSyncStatus("Ошибка"); showToast(`Не удалось вставить изображение: ${e.message}`); }
+}
+
+async function moveNoteToFolder(path, folder) {
+  folder = normalizeRepoPath(folder || "");
+  const filename = path.split("/").pop();
+  const newPath = folder ? `${folder}/${filename}` : filename;
+  if (newPath === path) return;
+  await performNoteRelocation(path, newPath, false);
+}
+
 async function renameNoteFile(path) {
   const currentName = noteName(path);
   const raw = prompt("Новое имя заметки", currentName);
@@ -1223,8 +1543,21 @@ async function performNoteRelocation(oldPath, newPath, copy = false) {
     const finalPath = await relocateFile(oldPath, newPath, { copy });
     const primaryWas = state.current === oldPath;
     const secondaryWas = state.secondary.path === oldPath;
+    if (!copy) {
+      for (const tab of state.tabs) if (tab.path === oldPath) tab.path = finalPath;
+      const active = activeTab();
+      if (active?.path === finalPath) updateActiveNoteTitle(finalPath);
+      persistTabsWorkspace();
+    }
     await loadTree();
-    if (!copy && primaryWas) await openNote(finalPath);
+    if (!copy) {
+      const newSha = existingFile(finalPath)?.sha || null;
+      for (const tab of state.tabs) if (tab.path === finalPath) tab.sha = newSha;
+      if (primaryWas) { state.current = finalPath; state.currentSha = newSha; updatePrimaryPathUI(finalPath); updateActiveNoteTitle(finalPath); }
+      if (secondaryWas) { state.secondary.path = finalPath; state.secondary.sha = newSha; updateSecondaryPathUI(finalPath); els.secondaryNoteTitle.textContent = noteName(finalPath); }
+      renderTabs(); persistTabsWorkspace(); renderFileList(els.searchInput.value);
+    }
+    if (!copy && primaryWas) { await Promise.all([renderBacklinks(finalPath), renderOutgoing(getEditorMarkdown())]); }
     else if (!copy && secondaryWas) await openInSplit(finalPath, state.splitOrientation, false);
     setSyncStatus("Готово");
     showToast(copy ? "Копия создана." : "Готово.");
@@ -1236,8 +1569,11 @@ async function deleteNoteFile(path) {
   try {
     const file = existingFile(path); if (!file) throw new Error("Файл не найден.");
     await deleteRepoFile(path, file.sha, `Delete ${path}`);
-    if (state.current === path) { state.current = null; state.currentSha = null; els.editorView.classList.add("hidden"); els.emptyState.classList.remove("hidden"); updateActiveNoteTitle(null); }
+    const tabToRemove = state.tabs.find(t => t.path === path);
+    if (tabToRemove) state.tabs = state.tabs.filter(t => t.id !== tabToRemove.id);
+    if (state.current === path) { state.current = null; state.currentSha = null; state.activeTabId = state.tabs[0]?.id || null; els.editorView.classList.add("hidden"); els.emptyState.classList.remove("hidden"); updateActiveNoteTitle(null); }
     if (state.secondary.path === path) closeSplit();
+    renderTabs(); persistTabsWorkspace();
     await loadTree();
     showToast("Заметка удалена.");
   } catch (e) { showToast(`Не удалось удалить: ${e.message}`); }
@@ -1261,6 +1597,8 @@ async function relocateFolder(oldFolder, newFolder) {
   const mapPath = p => p && (p === oldFolder || p.startsWith(oldFolder + "/")) ? newFolder + p.slice(oldFolder.length) : p;
   const oldPrimary = state.current, oldSecondary = state.secondary.path;
   state.current = mapPath(state.current); state.secondary.path = mapPath(state.secondary.path); state.selectedFolder = newFolder;
+  for (const tab of state.tabs) tab.path = mapPath(tab.path);
+  persistTabsWorkspace(); renderTabs();
   state.expandedFolders = new Set(Array.from(state.expandedFolders).map(mapPath));
   await loadTree();
   if (oldPrimary && oldPrimary !== state.current) await openNote(state.current);
@@ -1285,15 +1623,34 @@ async function moveFolderPrompt(path) {
 }
 
 async function deleteFolder(path) {
-  const items = state.files.filter(f => f.path.startsWith(normalizeRepoPath(path) + "/"));
+  const folder = normalizeRepoPath(path);
+  const items = state.files.filter(f => f.path.startsWith(folder + "/"));
   if (!items.length) return showToast("Папка уже пуста.");
-  if (!confirm(`Удалить папку «${path}» и все файлы внутри (${items.length})?`)) return;
+  if (!confirm(`Удалить папку «${folder}» и все файлы внутри (${items.length})?`)) return;
   try {
     setSyncStatus("Удаление папки…");
     for (const item of items.slice().reverse()) await deleteRepoFile(item.path, item.sha, `Delete ${item.path}`);
-    if (state.current?.startsWith(path + "/")) { state.current = null; state.currentSha = null; els.editorView.classList.add("hidden"); els.emptyState.classList.remove("hidden"); updateActiveNoteTitle(null); }
-    if (state.secondary.path?.startsWith(path + "/")) closeSplit();
-    state.selectedFolder = ""; await loadTree(); setSyncStatus("Готово"); showToast("Папка удалена.");
+
+    const removedTabIds = new Set(state.tabs.filter(t => t.path?.startsWith(folder + "/")).map(t => t.id));
+    const activeWasRemoved = removedTabIds.has(state.activeTabId);
+    state.tabs = state.tabs.filter(t => !removedTabIds.has(t.id));
+
+    if (state.secondary.path?.startsWith(folder + "/")) closeSplit();
+    state.selectedFolder = "";
+    await loadTree();
+
+    if (activeWasRemoved || state.current?.startsWith(folder + "/")) {
+      const fallback = state.tabs[0] || null;
+      if (fallback) await activateTab(fallback.id);
+      else {
+        state.activeTabId = null; state.current = null; state.currentSha = null;
+        els.editorView.classList.add("hidden"); els.emptyState.classList.remove("hidden");
+        updateActiveNoteTitle(null); renderTabs();
+        els.backlinksList.textContent = "—"; els.outgoingList.textContent = "—";
+      }
+    } else renderTabs();
+    persistTabsWorkspace();
+    setSyncStatus("Готово"); showToast("Папка удалена.");
   } catch (e) { setSyncStatus("Ошибка"); showToast(`Не удалось удалить папку: ${e.message}`); }
 }
 
@@ -1420,10 +1777,10 @@ function toolbarAction(action) {
   if (action === "highlight") return replaceSelection("==", "==", "выделенный текст");
   if (action === "wiki") { insertAtCursor("[[]]", 2); updateWikiSuggestions(); return; }
   if (action === "link") return replaceSelection("[", "](https://)", "текст ссылки");
-  if (action === "image") return insertAtCursor("![описание](путь-к-изображению)");
+  if (action === "image") return requestImageInsert("primary");
   if (action === "inlinecode" || action === "code") return replaceSelection("`", "`", "код");
-  if (action === "codeblock") { const lang = (prompt("Язык блока кода (например: javascript, python, glsl). Можно оставить пустым.", "") || "").trim(); return replaceSelection("```" + lang + "\n", "\n```", "код"); }
-  if (action === "table") return insertAtCursor("| Столбец 1 | Столбец 2 |\n| --- | --- |\n| Значение | Значение |\n\n");
+  if (action === "codeblock") { const lang = (prompt("Язык блока кода (например: javascript, python, glsl). Можно оставить пустым.", "") || "").trim(); return replaceSelection("```" + lang + "\n", "\n```\n\n", "код"); }
+  if (action === "table") return insertAtCursor("\n| Столбец 1 | Столбец 2 |\n| --- | --- |\n| Значение | Значение |\n\n");
   if (action === "hr") return insertAtCursor("\n---\n");
   if (action === "fullscreen") { document.body.classList.toggle("focus-mode"); return; }
   if (action === "h1") return prefixSelectedLines(() => "# ");
@@ -1850,6 +2207,7 @@ els.newNoteSidebarBtn.onclick = () => newNote();
 els.newFolderBtn.onclick = () => createFolder();
 els.logoutBtn.onclick = logout;
 els.vaultImport.onchange = e => importVault(e.target.files);
+els.imageInput.onchange = e => uploadImageForPane(e.target.files?.[0], state.imageTargetPane);
 els.menuBtn.onclick = toggleSidebar;
 els.searchRibbonBtn.onclick = () => {
   setMode("notes");
@@ -1944,6 +2302,17 @@ function setupSidebarResizer(handle, side) {
 }
 restorePanelWidths(); setupSidebarResizer(els.leftSidebarResizer, "left"); setupSidebarResizer(els.rightSidebarResizer, "right");
 
+els.fileList.addEventListener("dragover", e => {
+  if (e.target === els.fileList && Array.from(e.dataTransfer.types || []).includes("text/private-vault-note")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; els.fileList.classList.add("drop-root"); }
+});
+els.fileList.addEventListener("dragleave", e => { if (e.target === els.fileList) els.fileList.classList.remove("drop-root"); });
+els.fileList.addEventListener("drop", e => {
+  if (e.target !== els.fileList) return;
+  e.preventDefault(); els.fileList.classList.remove("drop-root");
+  const path = e.dataTransfer.getData("text/private-vault-note") || e.dataTransfer.getData("text/plain");
+  if (path) moveNoteToFolder(path, "");
+});
+
 els.fileList.addEventListener("contextmenu", e => {
   if (e.target !== els.fileList) return;
   e.preventDefault(); state.selectedFolder = "";
@@ -1955,6 +2324,7 @@ els.fileList.addEventListener("contextmenu", e => {
 
 els.editorText.addEventListener("input", () => {
   if (state.editorMode !== "raw") return;
+  syncActiveTabText(els.editorText.value);
   updateWikiSuggestions();
   renderOutgoing(els.editorText.value);
   updateDocumentStatus(els.editorText.value);
