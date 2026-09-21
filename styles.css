@@ -856,3 +856,20 @@ button.crumb:hover { color: var(--text); background: var(--panel-3); }
 .graph-node circle {
   transition: opacity .12s ease, stroke-width .12s ease !important;
 }
+
+
+/* v1.3 — final alignment + folder colors */
+.align-tool { font-size: 1rem; line-height: 1; }
+.folder-row.custom-color .folder-icon,
+.folder-row.custom-color .folder-name { color: var(--folder-color); }
+.folder-row.custom-color:hover { background: color-mix(in srgb, var(--folder-color) 10%, var(--panel-3)); }
+.folder-row.custom-color.selected { background: color-mix(in srgb, var(--folder-color) 14%, var(--panel-3)); }
+.folder-row.custom-color.selected .folder-icon,
+.folder-row.custom-color.selected .folder-name { color: var(--folder-color); }
+
+.cm-note-align-left { text-align: left !important; }
+.cm-note-align-center { text-align: center !important; }
+.cm-note-align-right { text-align: right !important; }
+.cm-note-align-center .cm-inline-image-widget,
+.cm-note-align-right .cm-inline-image-widget,
+.cm-note-align-left .cm-inline-image-widget { vertical-align: top; }

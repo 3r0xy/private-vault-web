@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="color-scheme" content="light dark" />
   <title>note</title>
-  <link rel="stylesheet" href="./styles.css?v=1.2" />
+  <link rel="stylesheet" href="./styles.css?v=1.3" />
 </head>
 <body>
   <div id="loginView" class="screen center">
@@ -125,6 +125,11 @@
                 <span class="tool-sep"></span>
                 <button class="tool-btn" data-action="bullet" title="Маркированный список">• ≡</button>
                 <button class="tool-btn" data-action="numbered" title="Нумерованный список">1.</button>
+                <span class="tool-sep"></span>
+                <button class="tool-btn align-tool" data-action="align-left" title="По левому краю">↤</button>
+                <button class="tool-btn align-tool" data-action="align-center" title="По центру">↔</button>
+                <button class="tool-btn align-tool" data-action="align-right" title="По правому краю">↦</button>
+                <span class="tool-sep"></span>
                 <button class="tool-btn" data-action="hr" title="Горизонтальная линия">—</button>
                 <button class="tool-btn" data-action="fullscreen" title="Режим фокуса">⛶</button>
               </div>
@@ -181,6 +186,11 @@
                 <button class="tool-btn" data-secondary-action="quote" title="Цитата">❝</button>
                 <button class="tool-btn" data-secondary-action="bullet" title="Маркированный список">• ≡</button>
                 <button class="tool-btn" data-secondary-action="numbered" title="Нумерованный список">1.</button>
+                <span class="tool-sep"></span>
+                <button class="tool-btn align-tool" data-secondary-action="align-left" title="По левому краю">↤</button>
+                <button class="tool-btn align-tool" data-secondary-action="align-center" title="По центру">↔</button>
+                <button class="tool-btn align-tool" data-secondary-action="align-right" title="По правому краю">↦</button>
+                <span class="tool-sep"></span>
                 <button class="tool-btn" data-secondary-action="hr" title="Горизонтальная линия">—</button>
                 <button class="tool-btn" data-secondary-action="fullscreen" title="Режим фокуса">⛶</button>
               </div>
@@ -235,10 +245,11 @@
     <input id="vaultImport" type="file" webkitdirectory directory multiple hidden />
     <input id="imageInput" type="file" accept="image/*" hidden />
     <input id="highlightColorInput" class="color-picker-proxy" type="color" value="#ffd84d" tabindex="-1" aria-hidden="true" />
+    <input id="folderColorInput" class="color-picker-proxy" type="color" value="#8b5cf6" tabindex="-1" aria-hidden="true" />
     <div id="toast" class="toast hidden"></div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
-  <script type="module" src="./app-v1.2.js"></script>
+  <script type="module" src="./app-v1.3.js"></script>
 </body>
 </html>
