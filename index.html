@@ -56,6 +56,10 @@
     <aside id="sidebar" class="sidebar">
       <div class="sidebar-titlebar">
         <strong id="vaultTitle">Private Vault</strong>
+        <div class="explorer-actions">
+          <button id="newNoteSidebarBtn" class="icon-mini" title="Новая заметка · Ctrl+N" aria-label="Новая заметка">＋</button>
+          <button id="newFolderBtn" class="icon-mini" title="Новая папка · Ctrl+Shift+N" aria-label="Новая папка">⌑＋</button>
+        </div>
         <span class="branch-dot" title="Private GitHub vault"></span>
       </div>
       <div class="sidebar-search">
@@ -71,9 +75,12 @@
         <div id="paneHost" class="pane-host">
           <section id="primaryPane" class="note-pane primary-pane">
             <div class="tabbar">
-              <div class="active-tab">
-                <svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h4"/></svg>
-                <span id="activeNoteTitle">Новая вкладка</span>
+              <div class="tabs-left">
+                <div class="active-tab">
+                  <svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h4"/></svg>
+                  <span id="activeNoteTitle">Новая вкладка</span>
+                </div>
+                <button id="newTabBtn" class="new-tab-btn" title="Новая заметка · Ctrl+N" aria-label="Новая заметка">＋</button>
               </div>
               <div class="tab-actions">
                 <button id="splitBtn" class="mini-btn split-btn" title="Разделить область">◫</button>
@@ -93,27 +100,38 @@
 
             <section id="editorView" class="editor hidden">
               <div class="pathbar">
-                <span class="path-label">⌁</span>
-                <input id="pathInput" class="path-input" aria-label="Путь заметки" />
+                <div id="pathBreadcrumb" class="path-breadcrumb" aria-label="Путь заметки"></div>
+                <input id="pathInput" class="path-input path-edit-input hidden" aria-label="Изменить путь заметки" />
+                <button id="editPathBtn" class="path-edit-btn" title="Изменить путь">✎</button>
               </div>
 
-              <div id="formatToolbar" class="format-toolbar" aria-label="Форматирование">
-                <button class="tool-btn" data-action="undo" title="Отменить">↶</button>
+              <div id="formatToolbar" class="format-toolbar expanded-toolbar" aria-label="Форматирование">
+                <button class="tool-btn" data-action="undo" title="Отменить · Ctrl+Z">↶</button>
                 <button class="tool-btn" data-action="redo" title="Повторить">↷</button>
                 <span class="tool-sep"></span>
                 <button class="tool-btn" data-action="h1" title="Заголовок 1">H1</button>
                 <button class="tool-btn" data-action="h2" title="Заголовок 2">H2</button>
-                <button class="tool-btn" data-action="bold" title="Жирный"><b>B</b></button>
-                <button class="tool-btn" data-action="italic" title="Курсив"><i>I</i></button>
+                <button class="tool-btn" data-action="h3" title="Заголовок 3">H3</button>
+                <span class="tool-sep"></span>
+                <button class="tool-btn" data-action="bold" title="Жирный · Ctrl+B"><b>B</b></button>
+                <button class="tool-btn" data-action="italic" title="Курсив · Ctrl+I"><i>I</i></button>
+                <button class="tool-btn" data-action="strike" title="Зачёркнутый"><s>S</s></button>
+                <button class="tool-btn" data-action="underline" title="Подчёркнутый"><u>U</u></button>
+                <button class="tool-btn" data-action="highlight" title="Выделение">▰</button>
                 <span class="tool-sep"></span>
                 <button class="tool-btn wiki-tool" data-action="wiki" title="Ссылка на заметку">[[ ]]</button>
-                <button class="tool-btn" data-action="link" title="Обычная ссылка">↗</button>
-                <button class="tool-btn" data-action="bullet" title="Маркированный список">• ≡</button>
-                <button class="tool-btn" data-action="numbered" title="Нумерованный список">1.</button>
+                <button class="tool-btn" data-action="link" title="Внешняя ссылка">🔗</button>
+                <button class="tool-btn" data-action="image" title="Изображение">▧</button>
+                <button class="tool-btn" data-action="table" title="Таблица">▦</button>
                 <button class="tool-btn" data-action="todo" title="Чекбокс">☑</button>
                 <button class="tool-btn" data-action="quote" title="Цитата">❝</button>
-                <button class="tool-btn" data-action="code" title="Код">&lt;/&gt;</button>
-                <button class="tool-btn" data-action="image" title="Изображение">▧</button>
+                <button class="tool-btn" data-action="inlinecode" title="Строчный код">&lt;/&gt;</button>
+                <button class="tool-btn" data-action="codeblock" title="Блок кода">⌗</button>
+                <span class="tool-sep"></span>
+                <button class="tool-btn" data-action="bullet" title="Маркированный список">• ≡</button>
+                <button class="tool-btn" data-action="numbered" title="Нумерованный список">1.</button>
+                <button class="tool-btn" data-action="hr" title="Горизонтальная линия">—</button>
+                <button class="tool-btn" data-action="fullscreen" title="Режим фокуса">⛶</button>
               </div>
 
               <div class="editor-body">
@@ -142,8 +160,9 @@
 
             <section id="secondaryEditorView" class="editor">
               <div class="pathbar">
-                <span class="path-label">⌁</span>
-                <input id="secondaryPathInput" class="path-input" aria-label="Путь заметки во второй области" />
+                <div id="secondaryPathBreadcrumb" class="path-breadcrumb" aria-label="Путь заметки во второй области"></div>
+                <input id="secondaryPathInput" class="path-input path-edit-input hidden" aria-label="Изменить путь второй заметки" />
+                <button id="secondaryEditPathBtn" class="path-edit-btn" title="Изменить путь">✎</button>
               </div>
 
               <div id="secondaryFormatToolbar" class="format-toolbar secondary-format-toolbar" aria-label="Форматирование второй области">
@@ -152,13 +171,25 @@
                 <span class="tool-sep"></span>
                 <button class="tool-btn" data-secondary-action="h1" title="Заголовок 1">H1</button>
                 <button class="tool-btn" data-secondary-action="h2" title="Заголовок 2">H2</button>
+                <button class="tool-btn" data-secondary-action="h3" title="Заголовок 3">H3</button>
                 <button class="tool-btn" data-secondary-action="bold" title="Жирный"><b>B</b></button>
                 <button class="tool-btn" data-secondary-action="italic" title="Курсив"><i>I</i></button>
+                <button class="tool-btn" data-secondary-action="strike" title="Зачёркнутый"><s>S</s></button>
+                <button class="tool-btn" data-secondary-action="underline" title="Подчёркнутый"><u>U</u></button>
+                <button class="tool-btn" data-secondary-action="highlight" title="Выделение">▰</button>
                 <span class="tool-sep"></span>
                 <button class="tool-btn wiki-tool" data-secondary-action="wiki" title="Ссылка на заметку">[[ ]]</button>
+                <button class="tool-btn" data-secondary-action="link" title="Внешняя ссылка">🔗</button>
+                <button class="tool-btn" data-secondary-action="image" title="Изображение">▧</button>
+                <button class="tool-btn" data-secondary-action="table" title="Таблица">▦</button>
+                <button class="tool-btn" data-secondary-action="todo" title="Чекбокс">☑</button>
+                <button class="tool-btn" data-secondary-action="quote" title="Цитата">❝</button>
+                <button class="tool-btn" data-secondary-action="inlinecode" title="Строчный код">&lt;/&gt;</button>
+                <button class="tool-btn" data-secondary-action="codeblock" title="Блок кода">⌗</button>
                 <button class="tool-btn" data-secondary-action="bullet" title="Маркированный список">• ≡</button>
                 <button class="tool-btn" data-secondary-action="numbered" title="Нумерованный список">1.</button>
-                <button class="tool-btn" data-secondary-action="todo" title="Чекбокс">☑</button>
+                <button class="tool-btn" data-secondary-action="hr" title="Горизонтальная линия">—</button>
+                <button class="tool-btn" data-secondary-action="fullscreen" title="Режим фокуса">⛶</button>
               </div>
 
               <div class="editor-body secondary-editor-body">

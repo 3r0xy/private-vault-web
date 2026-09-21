@@ -23,6 +23,8 @@ const state = {
   syncingEditor: false,
   expandedFolders: new Set(),
   splitOrientation: "vertical",
+  activePane: "primary",
+  selectedFolder: "",
   secondary: { path: null, sha: null, mode: "live", editorView: null, syncing: false },
 };
 
@@ -48,6 +50,8 @@ const els = {
   secondaryNoteTitle: $("secondaryNoteTitle"), secondaryPathInput: $("secondaryPathInput"), secondaryLiveEditorHost: $("secondaryLiveEditorHost"),
   secondaryEditorText: $("secondaryEditorText"), secondaryPreviewBtn: $("secondaryPreviewBtn"), secondaryEditBtn: $("secondaryEditBtn"),
   secondarySaveBtn: $("secondarySaveBtn"), secondaryCloseBtn: $("secondaryCloseBtn"), secondaryFormatToolbar: $("secondaryFormatToolbar"),
+  newTabBtn: $("newTabBtn"), newNoteSidebarBtn: $("newNoteSidebarBtn"), newFolderBtn: $("newFolderBtn"),
+  pathBreadcrumb: $("pathBreadcrumb"), editPathBtn: $("editPathBtn"), secondaryPathBreadcrumb: $("secondaryPathBreadcrumb"), secondaryEditPathBtn: $("secondaryEditPathBtn"),
 };
 
 function headers(extra = {}) {
@@ -103,6 +107,54 @@ function updateActiveNoteTitle(path = null) {
   els.activeNoteTitle.textContent = path ? noteName(path) : "Новая вкладка";
 }
 
+function folderOf(path = "") {
+  const clean = String(path || "").replace(/\\/g, "/");
+  return clean.includes("/") ? clean.slice(0, clean.lastIndexOf("/")) : "";
+}
+
+function renderBreadcrumb(target, path) {
+  if (!target) return;
+  target.innerHTML = "";
+  const parts = String(path || "").split("/").filter(Boolean);
+  if (!parts.length) { target.textContent = "Без пути"; return; }
+  let cumulative = "";
+  parts.forEach((part, i) => {
+    cumulative = cumulative ? `${cumulative}/${part}` : part;
+    const isLast = i === parts.length - 1;
+    const seg = document.createElement(isLast ? "span" : "button");
+    seg.className = isLast ? "crumb current" : "crumb";
+    seg.textContent = isLast ? part.replace(/\.md$/i, "") : part;
+    if (!isLast) {
+      const folderPath = cumulative;
+      seg.type = "button";
+      seg.title = `Папка ${folderPath}`;
+      seg.onclick = () => { state.selectedFolder = folderPath; state.expandedFolders.add(folderPath); renderFileList(els.searchInput.value); };
+    }
+    target.appendChild(seg);
+    if (!isLast) { const sep = document.createElement("span"); sep.className = "crumb-sep"; sep.textContent = "›"; target.appendChild(sep); }
+  });
+}
+
+function updatePrimaryPathUI(path) {
+  els.pathInput.value = path || "";
+  renderBreadcrumb(els.pathBreadcrumb, path || "");
+  const f = folderOf(path);
+  state.selectedFolder = f;
+}
+
+function updateSecondaryPathUI(path) {
+  els.secondaryPathInput.value = path || "";
+  renderBreadcrumb(els.secondaryPathBreadcrumb, path || "");
+}
+
+function togglePathEditor(which = "primary") {
+  const input = which === "secondary" ? els.secondaryPathInput : els.pathInput;
+  const breadcrumb = which === "secondary" ? els.secondaryPathBreadcrumb : els.pathBreadcrumb;
+  input.classList.toggle("hidden");
+  breadcrumb.classList.toggle("hidden", !input.classList.contains("hidden"));
+  if (!input.classList.contains("hidden")) { input.focus(); input.select(); }
+}
+
 function closeFloatingMenu() {
   document.querySelectorAll(".floating-menu").forEach(el => el.remove());
 }
@@ -127,8 +179,13 @@ function showFloatingMenu(items, x, y) {
   setTimeout(() => document.addEventListener("pointerdown", closeFloatingMenu, { once: true }), 0);
 }
 
+function openNoteInActivePane(path) {
+  if (els.paneHost.classList.contains("split-active") && state.activePane === "secondary") return openInSplit(path, state.splitOrientation, false);
+  return openNote(path);
+}
+
 function attachFileOpenHandlers(button, path) {
-  button.onclick = () => openNote(path);
+  button.onclick = () => openNoteInActivePane(path);
   button.oncontextmenu = e => {
     e.preventDefault();
     showFloatingMenu([
@@ -151,6 +208,9 @@ function setSplitOrientation(orientation) {
 }
 
 function closeSplit() {
+  state.activePane = "primary";
+  els.primaryPane.classList.add("pane-active");
+  els.secondaryPane.classList.remove("pane-active");
   els.paneHost.classList.remove("split-active", "split-vertical", "split-horizontal");
   els.secondaryPane.classList.add("hidden");
   els.paneSplitter.classList.add("hidden");
@@ -241,17 +301,26 @@ function noteName(path) {
 }
 
 function buildFileTree(notes) {
-  const root = { folders: new Map(), files: [] };
-  for (const note of notes.slice().sort((a, b) => a.path.localeCompare(b.path, "ru"))) {
-    const parts = note.path.split("/");
-    const filename = parts.pop();
+  const root = { folders: new Map(), files: [], path: "" };
+  const ensureFolder = (folderPath) => {
+    if (!folderPath) return root;
     let node = root;
     let currentPath = "";
-    for (const part of parts) {
+    for (const part of folderPath.split("/").filter(Boolean)) {
       currentPath = currentPath ? `${currentPath}/${part}` : part;
       if (!node.folders.has(part)) node.folders.set(part, { folders: new Map(), files: [], path: currentPath });
       node = node.folders.get(part);
     }
+    return node;
+  };
+
+  // Git does not store empty folders, so .gitkeep files are used as folder placeholders.
+  for (const file of state.files) ensureFolder(folderOf(file.path));
+
+  for (const note of notes.slice().sort((a, b) => a.path.localeCompare(b.path, "ru"))) {
+    const parts = note.path.split("/");
+    const filename = parts.pop();
+    const node = ensureFolder(parts.join("/"));
     node.files.push({ ...note, filename });
   }
   return root;
@@ -300,10 +369,19 @@ function renderFileList(filter = "") {
       const children = document.createElement("div");
       children.className = `folder-children ${open ? "open" : ""}`;
       row.onclick = () => {
+        state.selectedFolder = folder.path;
         if (state.expandedFolders.has(folder.path)) state.expandedFolders.delete(folder.path);
         else state.expandedFolders.add(folder.path);
         row.classList.toggle("open");
         children.classList.toggle("open");
+      };
+      row.oncontextmenu = e => {
+        e.preventDefault();
+        state.selectedFolder = folder.path;
+        showFloatingMenu([
+          { label: "Новая заметка в папке", action: () => newNote(`${folder.path}/Новая заметка ${new Date().toISOString().slice(0,10)}.md`) },
+          { label: "Новая вложенная папка", action: () => createFolder(folder.path) },
+        ], e.clientX, e.clientY);
       };
       container.appendChild(row);
       container.appendChild(children);
@@ -337,7 +415,10 @@ async function openNote(path) {
     const item = await getFile(path);
     state.current = path;
     state.currentSha = item.sha;
-    els.pathInput.value = path;
+    state.activePane = "primary";
+    els.primaryPane.classList.add("pane-active");
+    els.secondaryPane.classList.remove("pane-active");
+    updatePrimaryPathUI(path);
     updateActiveNoteTitle(path);
     setEditorMarkdown(item.text);
     els.emptyState.classList.add("hidden");
@@ -387,7 +468,7 @@ class WikiLinkWidget extends WidgetType {
     this.resolved = resolved;
   }
   eq(other) { return other.raw === this.raw && other.resolved === this.resolved; }
-  toDOM() {
+  toDOM(view) {
     const span = document.createElement("span");
     const label = this.raw.includes("|") ? this.raw.split("|").slice(1).join("|") : this.raw.split("#")[0];
     span.className = `cm-wiki-chip ${this.resolved ? "" : "missing"}`;
@@ -397,8 +478,11 @@ class WikiLinkWidget extends WidgetType {
     span.addEventListener("click", e => {
       e.preventDefault();
       e.stopPropagation();
-      if (this.resolved) openNote(this.resolved);
-      else createFromMissingLink(this.raw);
+      if (this.resolved) {
+        const inSecondary = els.secondaryLiveEditorHost?.contains(view.dom);
+        if (inSecondary && els.paneHost.classList.contains("split-active")) openInSplit(this.resolved, state.splitOrientation, false);
+        else openNote(this.resolved);
+      } else createFromMissingLink(this.raw);
     });
     return span;
   }
@@ -408,6 +492,28 @@ class WikiLinkWidget extends WidgetType {
 function selectionTouches(view, from, to) {
   const sel = view.state.selection.main;
   return sel.from <= to && sel.to >= from;
+}
+
+class TaskCheckboxWidget extends WidgetType {
+  constructor(checked, from, to) { super(); this.checked = checked; this.from = from; this.to = to; }
+  eq(other) { return other.checked === this.checked && other.from === this.from && other.to === this.to; }
+  toDOM(view) {
+    const box = document.createElement("button");
+    box.type = "button";
+    box.className = `task-checkbox-widget ${this.checked ? "checked" : ""}`;
+    box.textContent = this.checked ? "✓" : "";
+    box.setAttribute("aria-label", this.checked ? "Выполнено" : "Не выполнено");
+    box.setAttribute("aria-pressed", this.checked ? "true" : "false");
+    box.addEventListener("mousedown", e => { e.preventDefault(); e.stopPropagation(); });
+    box.addEventListener("click", e => {
+      e.preventDefault();
+      e.stopPropagation();
+      view.dispatch({ changes: { from: this.from, to: this.to, insert: this.checked ? "[ ]" : "[x]" } });
+      view.focus();
+    });
+    return box;
+  }
+  ignoreEvent() { return false; }
 }
 
 function buildLiveDecorations(view) {
@@ -523,6 +629,31 @@ function buildLiveDecorations(view) {
           }
         }
 
+        // Obsidian highlight ==text==.
+        const highlightRe = /==([^\n]+?)==/g;
+        let hlm;
+        while ((hlm = highlightRe.exec(text)) !== null) {
+          const from = base + hlm.index, to = from + hlm[0].length, innerFrom = from + 2, innerTo = to - 2;
+          if (overlapsWiki(from, to)) continue;
+          ranges.push(Decoration.mark({ class: "cm-live-highlight" }).range(innerFrom, innerTo));
+          if (!selectionTouches(view, from, to)) {
+            ranges.push(Decoration.replace({}).range(from, innerFrom));
+            ranges.push(Decoration.replace({}).range(innerTo, to));
+          }
+        }
+
+        // Simple HTML underline kept compatible with Markdown/Obsidian.
+        const underlineRe = /<u>([^\n]+?)<\/u>/gi;
+        let ulm;
+        while ((ulm = underlineRe.exec(text)) !== null) {
+          const from = base + ulm.index, to = from + ulm[0].length, innerFrom = from + 3, innerTo = to - 4;
+          ranges.push(Decoration.mark({ class: "cm-live-underline" }).range(innerFrom, innerTo));
+          if (!selectionTouches(view, from, to)) {
+            ranges.push(Decoration.replace({}).range(from, innerFrom));
+            ranges.push(Decoration.replace({}).range(innerTo, to));
+          }
+        }
+
         // Regular Markdown links: visually emphasize label and collapse destination while inactive.
         const linkRe = /\[([^\]\n]+)\]\(([^)\n]+)\)/g;
         let lm;
@@ -539,9 +670,16 @@ function buildLiveDecorations(view) {
           }
         }
 
-        // Checkboxes and lists retain their source but get softer structural styling.
-        if (/^\s*-\s+\[[ xX]\]\s+/.test(text)) ranges.push(Decoration.line({ class: "cm-live-task-line" }).range(base));
-        else if (/^\s*[-*+]\s+/.test(text) || /^\s*\d+[.)]\s+/.test(text)) ranges.push(Decoration.line({ class: "cm-live-list-line" }).range(base));
+        // Obsidian-like interactive task checkboxes. Source remains - [ ] / - [x].
+        const taskMatch = text.match(/^(\s*[-*+]\s+)\[([ xX])\](\s+)/);
+        if (taskMatch) {
+          ranges.push(Decoration.line({ class: "cm-live-task-line" }).range(base));
+          const markerFrom = base + taskMatch[1].length;
+          const markerTo = markerFrom + 3;
+          if (!selectionTouches(view, markerFrom, markerTo)) {
+            ranges.push(Decoration.replace({ widget: new TaskCheckboxWidget(/[xX]/.test(taskMatch[2]), markerFrom, markerTo) }).range(markerFrom, markerTo));
+          }
+        } else if (/^\s*[-*+]\s+/.test(text) || /^\s*\d+[.)]\s+/.test(text)) ranges.push(Decoration.line({ class: "cm-live-list-line" }).range(base));
       }
       if (line.to >= doc.length || line.to >= vr.to) break;
       pos = line.to + 1;
@@ -654,16 +792,19 @@ function showSecondaryEditor() {
   els.secondaryPreviewBtn.classList.remove("active");
 }
 
-async function openInSplit(path, orientation = "vertical") {
+async function openInSplit(path, orientation = "vertical", resetOrientation = true) {
   setMode("notes");
   try {
     const item = await getFile(path);
     state.secondary.path = path;
     state.secondary.sha = item.sha;
-    els.secondaryPathInput.value = path;
+    state.activePane = "secondary";
+    els.primaryPane.classList.remove("pane-active");
+    els.secondaryPane.classList.add("pane-active");
+    updateSecondaryPathUI(path);
     els.secondaryNoteTitle.textContent = noteName(path);
     setSecondaryMarkdown(item.text);
-    setSplitOrientation(orientation);
+    if (resetOrientation || !els.paneHost.classList.contains("split-active")) setSplitOrientation(orientation);
     showSecondaryPreview();
     els.sidebar.classList.remove("open");
     setTimeout(() => state.secondary.editorView?.focus(), 0);
@@ -702,7 +843,7 @@ function secondaryReplaceSelection(before, after = before, placeholder = "тек
   replaceSecondaryRange(sel.start, sel.end, insert, selectedTo, selectedFrom, selectedTo);
 }
 
-function secondaryPrefixLines(prefixer) {
+function secondaryPrefixLines(prefixer, selectResult = true) {
   const sel = secondarySelection();
   const text = sel.text;
   const lineStart = text.lastIndexOf("\n", Math.max(0, sel.start - 1)) + 1;
@@ -710,7 +851,8 @@ function secondaryPrefixLines(prefixer) {
   if (lineEnd === -1) lineEnd = text.length;
   const block = text.slice(lineStart, lineEnd);
   const lines = block.split("\n").map((line, i) => `${prefixer(i)}${line}`).join("\n");
-  replaceSecondaryRange(lineStart, lineEnd, lines, lineStart + lines.length, lineStart, lineStart + lines.length);
+  if (selectResult) replaceSecondaryRange(lineStart, lineEnd, lines, lineStart + lines.length, lineStart, lineStart + lines.length);
+  else replaceSecondaryRange(lineStart, lineEnd, lines, lineStart + lines.length);
 }
 
 function secondaryToolbarAction(action) {
@@ -718,12 +860,24 @@ function secondaryToolbarAction(action) {
   if (action === "redo") { if (state.secondary.mode === "live" && state.secondary.editorView) return redo(state.secondary.editorView); document.execCommand("redo"); return; }
   if (action === "bold") return secondaryReplaceSelection("**", "**", "жирный текст");
   if (action === "italic") return secondaryReplaceSelection("*", "*", "курсив");
+  if (action === "strike") return secondaryReplaceSelection("~~", "~~", "зачёркнутый текст");
+  if (action === "underline") return secondaryReplaceSelection("<u>", "</u>", "подчёркнутый текст");
+  if (action === "highlight") return secondaryReplaceSelection("==", "==", "выделенный текст");
+  if (action === "link") return secondaryReplaceSelection("[", "](https://)", "текст ссылки");
+  if (action === "inlinecode") return secondaryReplaceSelection("`", "`", "код");
+  if (action === "codeblock") return secondaryReplaceSelection("```\n", "\n```", "код");
+  if (action === "image") { const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, "![описание](путь-к-изображению)"); return; }
+  if (action === "hr") { const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, "\n---\n"); return; }
+  if (action === "fullscreen") { document.body.classList.toggle("focus-mode"); return; }
+  if (action === "table") { const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, "| Столбец 1 | Столбец 2 |\n| --- | --- |\n| Значение | Значение |\n"); return; }
+  if (action === "quote") return secondaryPrefixLines(() => "> ");
   if (action === "wiki") { const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, "[[]]", sel.start + 2); return; }
   if (action === "h1") return secondaryPrefixLines(() => "# ");
   if (action === "h2") return secondaryPrefixLines(() => "## ");
+  if (action === "h3") return secondaryPrefixLines(() => "### ");
   if (action === "bullet") return secondaryPrefixLines(() => "- ");
   if (action === "numbered") return secondaryPrefixLines(i => `${i + 1}. `);
-  if (action === "todo") return secondaryPrefixLines(() => "- [ ] ");
+  if (action === "todo") return secondaryPrefixLines(() => "- [ ] ", false);
 }
 
 function handleSecondaryKeydown(e) {
@@ -825,7 +979,7 @@ async function saveCurrent() {
     });
     state.current = saved.path;
     state.currentSha = saved.sha;
-    els.pathInput.value = saved.path;
+    updatePrimaryPathUI(saved.path);
     updateActiveNoteTitle(saved.path);
     state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
     await loadTree();
@@ -849,7 +1003,7 @@ async function saveSecondary() {
     });
     state.secondary.path = saved.path;
     state.secondary.sha = saved.sha;
-    els.secondaryPathInput.value = saved.path;
+    updateSecondaryPathUI(saved.path);
     els.secondaryNoteTitle.textContent = noteName(saved.path);
     state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
     await loadTree();
@@ -862,12 +1016,25 @@ async function saveSecondary() {
   }
 }
 
-function newNote(path = `notes/Новая заметка ${new Date().toISOString().slice(0,10)}.md`) {
+function suggestedNewNotePath() {
+  const folder = state.selectedFolder || folderOf(state.current) || "";
+  const now = new Date();
+  const date = now.toISOString().slice(0,10);
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  return `${folder ? `${folder}/` : ""}Новая заметка ${date} ${hh}-${mm}.md`;
+}
+
+function newNote(path = suggestedNewNotePath()) {
   state.current = null;
   state.currentSha = null;
-  els.pathInput.value = path.toLowerCase().endsWith(".md") ? path : `${path}.md`;
-  updateActiveNoteTitle(els.pathInput.value);
-  setEditorMarkdown(`# ${noteName(els.pathInput.value)}\n\n`);
+  state.activePane = "primary";
+  els.primaryPane.classList.add("pane-active");
+  els.secondaryPane.classList.remove("pane-active");
+  path = path.toLowerCase().endsWith(".md") ? path : `${path}.md`;
+  updatePrimaryPathUI(path);
+  updateActiveNoteTitle(path);
+  setEditorMarkdown(`# ${noteName(path)}\n\n`);
   els.emptyState.classList.add("hidden");
   els.editorView.classList.remove("hidden");
   els.backlinksList.textContent = "—";
@@ -879,10 +1046,33 @@ function newNote(path = `notes/Новая заметка ${new Date().toISOStrin
   setTimeout(() => state.editorView?.focus(), 0);
 }
 
+async function createFolder(baseOverride = null) {
+  const base = baseOverride !== null ? baseOverride : (state.selectedFolder || folderOf(state.current) || "");
+  const raw = prompt("Название новой папки", base ? `${base}/Новая папка` : "Новая папка");
+  if (!raw) return;
+  const folder = raw.trim().replace(/^\/+|\/+$/g, "").replace(/\\/g, "/");
+  if (!folder) return;
+  try {
+    setSyncStatus("Создание папки…");
+    const keepPath = `${folder}/.gitkeep`;
+    let sha = null;
+    try { const existing = await gh(`/repos/${encodeURIComponent(state.owner)}/${encodeURIComponent(state.repo)}/contents/${encodePath(keepPath)}?ref=${encodeURIComponent(state.branch)}`); sha = existing?.sha || null; } catch {}
+    const body = { message: `Create folder ${folder}`, content: utf8ToBase64(""), branch: state.branch };
+    if (sha) body.sha = sha;
+    await gh(`/repos/${encodeURIComponent(state.owner)}/${encodeURIComponent(state.repo)}/contents/${encodePath(keepPath)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    state.selectedFolder = folder;
+    state.expandedFolders.add(folder);
+    await loadTree();
+    setSyncStatus("Готово");
+    showToast(`Папка «${folder}» создана.`);
+  } catch (e) { setSyncStatus("Ошибка"); showToast(`Не удалось создать папку: ${e.message}`); }
+}
+
 function createFromMissingLink(target) {
   const clean = normalizeWikiTarget(target);
   if (!clean) return;
-  const path = clean.includes("/") ? `${clean}.md` : `notes/${clean}.md`;
+  const prefix = state.selectedFolder ? `${state.selectedFolder}/` : "";
+  const path = clean.includes("/") ? `${clean}.md` : `${prefix}${clean}.md`;
   newNote(path);
   showToast(`Новая заметка для [[${clean}]] — нажми «Сохранить».`);
 }
@@ -968,7 +1158,7 @@ function replaceSelection(before, after = before, placeholder = "текст") {
   replaceEditorRange(sel.start, sel.end, insert, selectedTo, selectedFrom, selectedTo);
 }
 
-function prefixSelectedLines(prefixer) {
+function prefixSelectedLines(prefixer, selectResult = true) {
   const sel = currentSelection();
   const text = sel.text;
   const lineStart = text.lastIndexOf("\n", Math.max(0, sel.start - 1)) + 1;
@@ -976,7 +1166,8 @@ function prefixSelectedLines(prefixer) {
   if (lineEnd === -1) lineEnd = text.length;
   const block = text.slice(lineStart, lineEnd);
   const lines = block.split("\n").map((line, i) => `${prefixer(i)}${line}`).join("\n");
-  replaceEditorRange(lineStart, lineEnd, lines, lineStart + lines.length, lineStart, lineStart + lines.length);
+  if (selectResult) replaceEditorRange(lineStart, lineEnd, lines, lineStart + lines.length, lineStart, lineStart + lines.length);
+  else replaceEditorRange(lineStart, lineEnd, lines, lineStart + lines.length);
 }
 
 function insertAtCursor(text, cursorOffset = text.length) {
@@ -995,15 +1186,23 @@ function toolbarAction(action) {
   }
   if (action === "bold") return replaceSelection("**", "**", "жирный текст");
   if (action === "italic") return replaceSelection("*", "*", "курсив");
+  if (action === "strike") return replaceSelection("~~", "~~", "зачёркнутый текст");
+  if (action === "underline") return replaceSelection("<u>", "</u>", "подчёркнутый текст");
+  if (action === "highlight") return replaceSelection("==", "==", "выделенный текст");
   if (action === "wiki") { insertAtCursor("[[]]", 2); updateWikiSuggestions(); return; }
   if (action === "link") return replaceSelection("[", "](https://)", "текст ссылки");
   if (action === "image") return insertAtCursor("![описание](путь-к-изображению)");
-  if (action === "code") return replaceSelection("`", "`", "код");
+  if (action === "inlinecode" || action === "code") return replaceSelection("`", "`", "код");
+  if (action === "codeblock") return replaceSelection("```\n", "\n```", "код");
+  if (action === "table") return insertAtCursor("| Столбец 1 | Столбец 2 |\n| --- | --- |\n| Значение | Значение |\n");
+  if (action === "hr") return insertAtCursor("\n---\n");
+  if (action === "fullscreen") { document.body.classList.toggle("focus-mode"); return; }
   if (action === "h1") return prefixSelectedLines(() => "# ");
   if (action === "h2") return prefixSelectedLines(() => "## ");
+  if (action === "h3") return prefixSelectedLines(() => "### ");
   if (action === "bullet") return prefixSelectedLines(() => "- ");
   if (action === "numbered") return prefixSelectedLines(i => `${i + 1}. `);
-  if (action === "todo") return prefixSelectedLines(() => "- [ ] ");
+  if (action === "todo") return prefixSelectedLines(() => "- [ ] ", false);
   if (action === "quote") return prefixSelectedLines(() => "> ");
 }
 
@@ -1245,7 +1444,11 @@ function renderGraph(nodes, links) {
     .force("link", d3.forceLink(links).id(d => d.id).distance(d => 70 + Math.min(80, ((d.source.degree || 0) + (d.target.degree || 0)) * 4)).strength(.65))
     .force("charge", d3.forceManyBody().strength(d => -90 - Math.min(220, (d.degree || 0) * 14)))
     .force("center", d3.forceCenter(width / 2, height / 2))
+    .force("x", d3.forceX(width / 2).strength(.008))
+    .force("y", d3.forceY(height / 2).strength(.008))
     .force("collision", d3.forceCollide().radius(d => 25 + Math.min(20, (d.degree || 0) * 2)))
+    .velocityDecay(.5)
+    .alphaDecay(.035)
     .on("tick", () => {
       link
         .attr("x1", d => d.source.x)
@@ -1264,15 +1467,22 @@ function renderGraph(nodes, links) {
       d.fx = event.x; d.fy = event.y;
     })
     .on("end", (event, d) => {
-      if (!event.active) simulation.alphaTarget(0);
+      if (!event.active) simulation.alphaTarget(.012);
       d.fx = null; d.fy = null;
     });
   node.call(drag);
 
   node.on("click", (event, d) => {
+    event.preventDefault();
     event.stopPropagation();
-    if (d.path) openNote(d.path);
+    if (d.path) {
+      setMode("notes");
+      openNote(d.path);
+    }
   });
+
+  // Keep a very subtle living motion, similar to Obsidian's graph.
+  simulation.alphaTarget(.012).restart();
 
   const zoom = d3.zoom()
     .scaleExtent([0.12, 5])
@@ -1408,6 +1618,9 @@ els.previewBtn.onclick = showPreview;
 els.editBtn.onclick = showEditor;
 els.saveBtn.onclick = saveCurrent;
 els.newBtn.onclick = () => newNote();
+els.newTabBtn.onclick = () => newNote();
+els.newNoteSidebarBtn.onclick = () => newNote();
+els.newFolderBtn.onclick = () => createFolder();
 els.logoutBtn.onclick = logout;
 els.vaultImport.onchange = e => importVault(e.target.files);
 els.menuBtn.onclick = toggleSidebar;
@@ -1441,6 +1654,14 @@ els.secondaryFormatToolbar.addEventListener("click", e => {
   if (btn) secondaryToolbarAction(btn.dataset.secondaryAction);
 });
 els.secondaryEditorText.addEventListener("keydown", handleSecondaryKeydown);
+els.editPathBtn.onclick = () => togglePathEditor("primary");
+els.secondaryEditPathBtn.onclick = () => togglePathEditor("secondary");
+els.pathInput.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); updatePrimaryPathUI(els.pathInput.value.trim()); togglePathEditor("primary"); } });
+els.secondaryPathInput.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); updateSecondaryPathUI(els.secondaryPathInput.value.trim()); togglePathEditor("secondary"); } });
+
+const setActivePane = pane => { state.activePane = pane; els.primaryPane.classList.toggle("pane-active", pane === "primary"); els.secondaryPane.classList.toggle("pane-active", pane === "secondary"); };
+els.primaryPane.addEventListener("pointerdown", () => setActivePane("primary"));
+els.secondaryPane.addEventListener("pointerdown", () => setActivePane("secondary"));
 
 els.paneSplitter.addEventListener("pointerdown", e => {
   if (!els.paneHost.classList.contains("split-active")) return;
@@ -1473,6 +1694,8 @@ els.editorText.addEventListener("blur", () => setTimeout(() => hideWikiSuggestio
 
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") closeFloatingMenu();
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.code === "KeyN") { e.preventDefault(); newNote(); return; }
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.shiftKey && e.code === "KeyN") { e.preventDefault(); createFolder(); return; }
   // One-time Obsidian vault import. Intentionally hidden from the permanent UI.
   if (e.ctrlKey && e.altKey && !e.shiftKey && e.code === "KeyI") {
     e.preventDefault();
