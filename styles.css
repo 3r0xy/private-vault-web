@@ -194,6 +194,13 @@ kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5p
 }
 .status-left, .status-right { display: flex; align-items: center; gap: 11px; white-space: nowrap; }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: #42b883; }
+.vault-storage {
+  opacity: .68; padding: 1px 6px; border: 1px solid transparent; border-radius: 999px;
+  transition: opacity .15s ease, border-color .15s ease, color .15s ease; cursor: default;
+}
+.vault-storage:hover { opacity: 1; border-color: var(--line); }
+.vault-storage.storage-warn { color: #d6a94d; opacity: .9; }
+.vault-storage.storage-danger { color: #f97066; opacity: 1; }
 
 /* Wiki suggestions */
 .wiki-suggest {
