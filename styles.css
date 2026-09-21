@@ -589,3 +589,128 @@ button.crumb:hover { color: var(--text); background: var(--panel-3); }
   opacity: 0 !important;
   pointer-events: none !important;
 }
+
+
+/* v1.1 — stability pass */
+:root { --note-highlight: #ffd84d; }
+
+/* Markdown syntax stays in the document for stable cursor mapping, but is visually hidden in Live mode. */
+.cm-md-marker {
+  opacity: 0 !important;
+  color: transparent !important;
+}
+
+/* Stable task and bullet widgets: inline only, never block decorations. */
+.task-inline-widget {
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  margin: 0 8px 0 0;
+  border: 1.5px solid color-mix(in srgb, var(--muted) 78%, transparent);
+  border-radius: 3px;
+  background: transparent;
+  vertical-align: -2px;
+  cursor: pointer;
+  user-select: none;
+}
+.task-inline-widget.checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.task-inline-widget.checked::after {
+  content: "✓";
+  color: white;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+.bullet-inline-widget {
+  display: inline-block;
+  width: 14px;
+  margin-right: 4px;
+  text-align: center;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1;
+  vertical-align: 1px;
+  user-select: none;
+}
+.cm-live-task-line,
+.cm-live-list-line {
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
+}
+
+/* Obsidian-compatible ==highlight== with a user-selected app color. */
+.cm-live-highlight {
+  background: color-mix(in srgb, var(--note-highlight) 72%, transparent) !important;
+  border-radius: 3px;
+  padding: 0 .06em;
+}
+
+/* Media previews are outside CodeMirror so they cannot disturb cursor geometry. */
+.media-preview {
+  width: min(840px, calc(100% - 68px));
+  margin: -68px auto 80px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.media-preview.hidden { display: none !important; }
+.media-preview::before {
+  content: "Вложения";
+  display: block;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: .72rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: .055em;
+}
+.media-preview-item {
+  margin: 0 0 14px;
+  padding: 0;
+}
+.media-preview-item img {
+  display: block;
+  max-width: 100%;
+  max-height: 68vh;
+  object-fit: contain;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+}
+.media-preview-item figcaption {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: .72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.media-preview-status {
+  padding: 10px 0;
+  color: var(--muted);
+  font-size: .8rem;
+}
+.media-preview-status.error { color: var(--danger); }
+
+/* Old block-image/widget styles are intentionally neutralized. */
+.cm-image-widget,
+.cm-image-preview {
+  display: none !important;
+}
+
+/* Graph movement is controlled only by D3 simulation now; no CSS transform animation. */
+.graph-node {
+  transition: opacity .12s ease;
+}
+.graph-node:active { cursor: grabbing !important; }
+
+@media (max-width: 620px) {
+  .media-preview {
+    width: calc(100% - 36px);
+    margin-left: 18px;
+    margin-right: 18px;
+  }
+}
