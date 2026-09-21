@@ -69,6 +69,7 @@
       <div class="explorer-label">ФАЙЛЫ</div>
       <div id="fileList" class="file-list"></div>
     </aside>
+    <div id="leftSidebarResizer" class="sidebar-resizer left-sidebar-resizer" role="separator" aria-label="Изменить ширину проводника"></div>
 
     <main class="main">
       <section id="notesWorkspace" class="workspace">
@@ -125,8 +126,8 @@
                 <button class="tool-btn" data-action="table" title="Таблица">▦</button>
                 <button class="tool-btn" data-action="todo" title="Чекбокс">☑</button>
                 <button class="tool-btn" data-action="quote" title="Цитата">❝</button>
-                <button class="tool-btn" data-action="inlinecode" title="Строчный код">&lt;/&gt;</button>
-                <button class="tool-btn" data-action="codeblock" title="Блок кода">⌗</button>
+                <button class="tool-btn" data-action="inlinecode" title="Строчный код">`code`</button>
+                <button class="tool-btn" data-action="codeblock" title="Блок кода с языком">{ }</button>
                 <span class="tool-sep"></span>
                 <button class="tool-btn" data-action="bullet" title="Маркированный список">• ≡</button>
                 <button class="tool-btn" data-action="numbered" title="Нумерованный список">1.</button>
@@ -184,8 +185,8 @@
                 <button class="tool-btn" data-secondary-action="table" title="Таблица">▦</button>
                 <button class="tool-btn" data-secondary-action="todo" title="Чекбокс">☑</button>
                 <button class="tool-btn" data-secondary-action="quote" title="Цитата">❝</button>
-                <button class="tool-btn" data-secondary-action="inlinecode" title="Строчный код">&lt;/&gt;</button>
-                <button class="tool-btn" data-secondary-action="codeblock" title="Блок кода">⌗</button>
+                <button class="tool-btn" data-secondary-action="inlinecode" title="Строчный код">`code`</button>
+                <button class="tool-btn" data-secondary-action="codeblock" title="Блок кода с языком">{ }</button>
                 <button class="tool-btn" data-secondary-action="bullet" title="Маркированный список">• ≡</button>
                 <button class="tool-btn" data-secondary-action="numbered" title="Нумерованный список">1.</button>
                 <button class="tool-btn" data-secondary-action="hr" title="Горизонтальная линия">—</button>
@@ -217,6 +218,7 @@
     </main>
 
     <!-- Context / backlinks -->
+    <div id="rightSidebarResizer" class="sidebar-resizer right-sidebar-resizer" role="separator" aria-label="Изменить ширину панели связей"></div>
     <aside id="contextSidebar" class="context-sidebar">
       <div class="context-titlebar">СВЯЗИ</div>
       <div class="context-scroll">

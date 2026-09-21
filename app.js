@@ -17,7 +17,7 @@ const state = {
   wikiSuggestions: [],
   wikiSelected: 0,
   wikiRange: null,
-  graph: { nodes: [], links: [], simulation: null, zoom: null, svg: null },
+  graph: { nodes: [], links: [], simulation: null, zoom: null, svg: null, ambientFrame: null, nodeSelection: null, linkSelection: null },
   editorMode: "live",
   editorView: null,
   syncingEditor: false,
@@ -52,6 +52,7 @@ const els = {
   secondarySaveBtn: $("secondarySaveBtn"), secondaryCloseBtn: $("secondaryCloseBtn"), secondaryFormatToolbar: $("secondaryFormatToolbar"),
   newTabBtn: $("newTabBtn"), newNoteSidebarBtn: $("newNoteSidebarBtn"), newFolderBtn: $("newFolderBtn"),
   pathBreadcrumb: $("pathBreadcrumb"), editPathBtn: $("editPathBtn"), secondaryPathBreadcrumb: $("secondaryPathBreadcrumb"), secondaryEditPathBtn: $("secondaryEditPathBtn"),
+  leftSidebarResizer: $("leftSidebarResizer"), rightSidebarResizer: $("rightSidebarResizer"),
 };
 
 function headers(extra = {}) {
@@ -164,9 +165,17 @@ function showFloatingMenu(items, x, y) {
   const menu = document.createElement("div");
   menu.className = "floating-menu";
   for (const item of items) {
+    if (item.separator) {
+      const sep = document.createElement("div");
+      sep.className = "menu-separator";
+      menu.appendChild(sep);
+      continue;
+    }
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.textContent = item.label;
+    btn.className = item.danger ? "danger" : "";
+    if (item.shortcut) btn.innerHTML = `<span>${escapeHtml(item.label)}</span><kbd>${escapeHtml(item.shortcut)}</kbd>`;
+    else btn.textContent = item.label;
     btn.onclick = () => { closeFloatingMenu(); item.action(); };
     menu.appendChild(btn);
   }
@@ -179,6 +188,7 @@ function showFloatingMenu(items, x, y) {
   setTimeout(() => document.addEventListener("pointerdown", closeFloatingMenu, { once: true }), 0);
 }
 
+
 function openNoteInActivePane(path) {
   if (els.paneHost.classList.contains("split-active") && state.activePane === "secondary") return openInSplit(path, state.splitOrientation, false);
   return openNote(path);
@@ -188,13 +198,22 @@ function attachFileOpenHandlers(button, path) {
   button.onclick = () => openNoteInActivePane(path);
   button.oncontextmenu = e => {
     e.preventDefault();
+    e.stopPropagation();
     showFloatingMenu([
-      { label: "Открыть", action: () => openNote(path) },
+      { label: "Открыть", action: () => openNoteInActivePane(path) },
       { label: "Открыть справа", action: () => openInSplit(path, "vertical") },
       { label: "Открыть снизу", action: () => openInSplit(path, "horizontal") },
+      { separator: true },
+      { label: "Переименовать", action: () => renameNoteFile(path) },
+      { label: "Переместить…", action: () => moveNoteFile(path) },
+      { label: "Создать копию", action: () => duplicateNoteFile(path) },
+      { label: "Скопировать путь", action: () => copyRepoPath(path) },
+      { separator: true },
+      { label: "Удалить", danger: true, action: () => deleteNoteFile(path) },
     ], e.clientX, e.clientY);
   };
 }
+
 
 function setSplitOrientation(orientation) {
   if (orientation === "vertical" && window.innerWidth < 720) orientation = "horizontal";
@@ -342,7 +361,7 @@ function renderFileList(filter = "") {
       const btn = document.createElement("button");
       btn.className = `file-item ${state.current === note.path ? "active" : ""}`;
       const folder = note.path.includes("/") ? note.path.slice(0, note.path.lastIndexOf("/")) : "";
-      btn.innerHTML = `<span class="file-icon">◇</span><span class="file-name">${escapeHtml(noteName(note.path))}</span>${folder ? `<span class="search-path">${escapeHtml(folder)}</span>` : ""}`;
+      btn.innerHTML = `<svg class="tree-icon file-icon-svg" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h4"/></svg><span class="file-name">${escapeHtml(noteName(note.path))}</span>${folder ? `<span class="search-path">${escapeHtml(folder)}</span>` : ""}`;
       attachFileOpenHandlers(btn, note.path);
       els.fileList.appendChild(btn);
     }
@@ -363,24 +382,29 @@ function renderFileList(filter = "") {
     for (const [name, folder] of Array.from(node.folders.entries()).sort((a,b) => a[0].localeCompare(b[0], "ru"))) {
       const open = state.expandedFolders.has(folder.path);
       const row = document.createElement("button");
-      row.className = `folder-row ${open ? "open" : ""}`;
+      row.className = `folder-row ${open ? "open" : ""} ${state.selectedFolder === folder.path ? "selected" : ""}`;
       row.style.paddingLeft = `${6 + level * 13}px`;
-      row.innerHTML = `<span class="folder-chevron">›</span><span class="folder-name">${escapeHtml(name)}</span>`;
+      row.innerHTML = `<span class="folder-chevron">›</span><svg class="tree-icon folder-icon" viewBox="0 0 24 24"><path d="M3.5 6.5h6l2 2H20.5v9.5H3.5z"/></svg><span class="folder-name">${escapeHtml(name)}</span>`;
       const children = document.createElement("div");
       children.className = `folder-children ${open ? "open" : ""}`;
       row.onclick = () => {
         state.selectedFolder = folder.path;
         if (state.expandedFolders.has(folder.path)) state.expandedFolders.delete(folder.path);
         else state.expandedFolders.add(folder.path);
-        row.classList.toggle("open");
-        children.classList.toggle("open");
+        renderFileList(els.searchInput.value);
       };
       row.oncontextmenu = e => {
         e.preventDefault();
         state.selectedFolder = folder.path;
         showFloatingMenu([
-          { label: "Новая заметка в папке", action: () => newNote(`${folder.path}/Новая заметка ${new Date().toISOString().slice(0,10)}.md`) },
+          { label: "Новая заметка", action: () => newNote(`${folder.path}/Новая заметка ${new Date().toISOString().slice(0,10)}.md`) },
           { label: "Новая вложенная папка", action: () => createFolder(folder.path) },
+          { separator: true },
+          { label: "Переименовать", action: () => renameFolder(folder.path) },
+          { label: "Переместить…", action: () => moveFolderPrompt(folder.path) },
+          { label: "Скопировать путь", action: () => copyRepoPath(folder.path) },
+          { separator: true },
+          { label: "Удалить папку", danger: true, action: () => deleteFolder(folder.path) },
         ], e.clientX, e.clientY);
       };
       container.appendChild(row);
@@ -392,7 +416,7 @@ function renderFileList(filter = "") {
       const btn = document.createElement("button");
       btn.className = `file-item ${state.current === note.path ? "active" : ""}`;
       btn.style.paddingLeft = `${18 + level * 13}px`;
-      btn.innerHTML = `<span class="file-icon">◇</span><span class="file-name">${escapeHtml(noteName(note.path))}</span>`;
+      btn.innerHTML = `<svg class="tree-icon file-icon-svg" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h4"/></svg><span class="file-name">${escapeHtml(noteName(note.path))}</span>`;
       attachFileOpenHandlers(btn, note.path);
       container.appendChild(btn);
     }
@@ -495,8 +519,8 @@ function selectionTouches(view, from, to) {
 }
 
 class TaskCheckboxWidget extends WidgetType {
-  constructor(checked, from, to) { super(); this.checked = checked; this.from = from; this.to = to; }
-  eq(other) { return other.checked === this.checked && other.from === this.from && other.to === this.to; }
+  constructor(checked, from, to, bullet = "-") { super(); this.checked = checked; this.from = from; this.to = to; this.bullet = bullet; }
+  eq(other) { return other.checked === this.checked && other.from === this.from && other.to === this.to && other.bullet === this.bullet; }
   toDOM(view) {
     const box = document.createElement("button");
     box.type = "button";
@@ -508,7 +532,7 @@ class TaskCheckboxWidget extends WidgetType {
     box.addEventListener("click", e => {
       e.preventDefault();
       e.stopPropagation();
-      view.dispatch({ changes: { from: this.from, to: this.to, insert: this.checked ? "[ ]" : "[x]" } });
+      view.dispatch({ changes: { from: this.from, to: this.to, insert: `${this.bullet} [${this.checked ? " " : "x"}]` } });
       view.focus();
     });
     return box;
@@ -516,10 +540,116 @@ class TaskCheckboxWidget extends WidgetType {
   ignoreEvent() { return false; }
 }
 
+class TableWidget extends WidgetType {
+  constructor(markdownText, from, to) { super(); this.markdownText = markdownText; this.from = from; this.to = to; }
+  eq(other) { return other.markdownText === this.markdownText && other.from === this.from && other.to === this.to; }
+  toDOM(view) {
+    const wrap = document.createElement("div");
+    wrap.className = "cm-table-widget";
+    wrap.title = "Кликни, чтобы редактировать таблицу как Markdown";
+    const lines = this.markdownText.trim().split(/\r?\n/);
+    const parse = line => line.trim().replace(/^\|/, "").replace(/\|$/, "").split(/(?<!\\)\|/).map(x => x.replace(/\\\|/g, "|").trim());
+    const header = parse(lines[0] || "");
+    const align = parse(lines[1] || "").map(x => x.startsWith(":") && x.endsWith(":") ? "center" : x.endsWith(":") ? "right" : "left");
+    const body = lines.slice(2).map(parse);
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    const hr = document.createElement("tr");
+    header.forEach((cell, i) => { const th = document.createElement("th"); th.textContent = cell; th.style.textAlign = align[i] || "left"; hr.appendChild(th); });
+    thead.appendChild(hr); table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    body.forEach(row => { const tr = document.createElement("tr"); header.forEach((_, i) => { const td = document.createElement("td"); td.textContent = row[i] || ""; td.style.textAlign = align[i] || "left"; tr.appendChild(td); }); tbody.appendChild(tr); });
+    table.appendChild(tbody); wrap.appendChild(table);
+    wrap.addEventListener("mousedown", e => e.preventDefault());
+    wrap.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); view.dispatch({ selection: { anchor: Math.min(this.from + 1, this.to) }, scrollIntoView: true }); view.focus(); });
+    return wrap;
+  }
+  ignoreEvent() { return false; }
+}
+
+class CodeBlockWidget extends WidgetType {
+  constructor(language, code, from, to) { super(); this.language = language || "text"; this.code = code; this.from = from; this.to = to; }
+  eq(other) { return other.language === this.language && other.code === this.code && other.from === this.from && other.to === this.to; }
+  toDOM(view) {
+    const wrap = document.createElement("div");
+    wrap.className = "cm-codeblock-widget";
+    const head = document.createElement("div");
+    head.className = "codeblock-head";
+    const lang = document.createElement("span");
+    lang.className = "codeblock-language";
+    lang.textContent = this.language || "text";
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "codeblock-copy";
+    copy.textContent = "Копировать";
+    copy.addEventListener("mousedown", e => { e.preventDefault(); e.stopPropagation(); });
+    copy.addEventListener("click", async e => { e.preventDefault(); e.stopPropagation(); try { await navigator.clipboard.writeText(this.code); copy.textContent = "Скопировано"; setTimeout(() => copy.textContent = "Копировать", 1200); } catch { showToast("Не удалось скопировать код."); } });
+    head.append(lang, copy);
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    code.textContent = this.code;
+    pre.appendChild(code);
+    wrap.append(head, pre);
+    wrap.title = "Кликни по блоку, чтобы редактировать исходный Markdown";
+    wrap.addEventListener("click", e => { if (e.target.closest("button")) return; e.preventDefault(); e.stopPropagation(); view.dispatch({ selection: { anchor: Math.min(this.from + 4 + this.language.length, this.to) }, scrollIntoView: true }); view.focus(); });
+    return wrap;
+  }
+  ignoreEvent() { return false; }
+}
+
+function detectLiveBlocks(text) {
+  const lines = String(text).split("\n");
+  const starts = [];
+  let offset = 0;
+  for (let i = 0; i < lines.length; i++) { starts.push(offset); offset += lines[i].length + (i < lines.length - 1 ? 1 : 0); }
+  const blocks = [];
+  for (let i = 0; i < lines.length; i++) {
+    const fence = lines[i].match(/^\s*(```|~~~)\s*([^\s`]*)\s*$/);
+    if (fence) {
+      const marker = fence[1];
+      let j = i + 1;
+      while (j < lines.length && !new RegExp(`^\\s*${marker.replace(/~/g, "\\~")}\\s*$`).test(lines[j])) j++;
+      if (j < lines.length) {
+        const from = starts[i];
+        const to = starts[j] + lines[j].length;
+        blocks.push({ type: "code", from, to, language: fence[2] || "text", code: lines.slice(i + 1, j).join("\n"), text: text.slice(from, to) });
+        i = j;
+        continue;
+      }
+    }
+    const next = lines[i + 1] || "";
+    const isTableHead = lines[i].includes("|") && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(next);
+    if (isTableHead) {
+      let j = i + 2;
+      while (j < lines.length && lines[j].trim() && lines[j].includes("|")) j++;
+      const last = Math.max(i + 1, j - 1);
+      const from = starts[i];
+      const to = starts[last] + lines[last].length;
+      blocks.push({ type: "table", from, to, text: text.slice(from, to) });
+      i = last;
+    }
+  }
+  return blocks;
+}
+
 function buildLiveDecorations(view) {
   const ranges = [];
   const seenLines = new Set();
   const doc = view.state.doc;
+  const fullText = doc.toString();
+  const blocks = detectLiveBlocks(fullText);
+  const collapsed = [];
+
+  for (const block of blocks) {
+    const visible = view.visibleRanges.some(vr => block.to >= vr.from && block.from <= vr.to);
+    if (!visible || selectionTouches(view, block.from, block.to)) continue;
+    const widget = block.type === "table"
+      ? new TableWidget(block.text, block.from, block.to)
+      : new CodeBlockWidget(block.language, block.code, block.from, block.to);
+    ranges.push(Decoration.replace({ widget, block: true, inclusive: false }).range(block.from, block.to));
+    collapsed.push([block.from, block.to]);
+  }
+  const insideCollapsed = (from, to) => collapsed.some(([a,b]) => from < b && to > a);
 
   for (const vr of view.visibleRanges) {
     let pos = vr.from;
@@ -529,164 +659,111 @@ function buildLiveDecorations(view) {
         seenLines.add(line.number);
         const text = line.text;
         const base = line.from;
-        const activeLine = selectionTouches(view, line.from, line.to);
-        const wikiSpans = [];
-
-        // Obsidian-style wiki links. When the cursor is inside a link, raw syntax is shown.
-        const wikiRe = /\[\[([^\]]+)\]\]/g;
-        let wm;
-        while ((wm = wikiRe.exec(text)) !== null) {
-          const from = base + wm.index;
-          const to = from + wm[0].length;
-          wikiSpans.push([from, to]);
-          const resolved = wikiTargetToPath(wm[1]);
-          if (selectionTouches(view, from, to)) {
-            ranges.push(Decoration.mark({ class: `cm-live-wiki-raw ${resolved ? "" : "missing"}` }).range(from, to));
-          } else {
-            ranges.push(Decoration.replace({ widget: new WikiLinkWidget(wm[1], resolved), inclusive: false }).range(from, to));
+        if (insideCollapsed(line.from, line.to)) {
+          // Entire table/code block is rendered by one widget.
+        } else {
+          const wikiSpans = [];
+          const wikiRe = /\[\[([^\]]+)\]\]/g;
+          let wm;
+          while ((wm = wikiRe.exec(text)) !== null) {
+            const from = base + wm.index, to = from + wm[0].length;
+            wikiSpans.push([from, to]);
+            const resolved = wikiTargetToPath(wm[1]);
+            if (selectionTouches(view, from, to)) ranges.push(Decoration.mark({ class: `cm-live-wiki-raw ${resolved ? "" : "missing"}` }).range(from, to));
+            else ranges.push(Decoration.replace({ widget: new WikiLinkWidget(wm[1], resolved), inclusive: false }).range(from, to));
           }
-        }
+          const overlapsWiki = (from, to) => wikiSpans.some(([a,b]) => from < b && to > a);
 
-        const overlapsWiki = (from, to) => wikiSpans.some(([a, b]) => from < b && to > a);
-
-        // Headings: hide Markdown # markers and style the text like a heading.
-        const hm = text.match(/^(#{1,6})\s+/);
-        if (hm) {
-          const markerTo = base + hm[0].length;
-          const level = hm[1].length;
-          ranges.push(Decoration.line({ class: `cm-live-heading-line cm-live-heading-${level}` }).range(base));
-          if (!selectionTouches(view, base, markerTo)) {
-            ranges.push(Decoration.replace({}).range(base, markerTo));
-          } else {
-            ranges.push(Decoration.mark({ class: "cm-md-marker" }).range(base, markerTo));
+          const hm = text.match(/^(#{1,6})\s+/);
+          const viewPath = els.secondaryLiveEditorHost?.contains(view.dom) ? state.secondary.path : state.current;
+          const duplicateTitle = !!(hm && hm[1].length === 1 && line.number === 1 && viewPath && text.slice(hm[0].length).trim() === noteName(viewPath));
+          if (duplicateTitle && !selectionTouches(view, line.from, line.to)) {
+            ranges.push(Decoration.replace({}).range(line.from, line.to));
+            ranges.push(Decoration.line({ class: "cm-duplicate-title-line" }).range(base));
+          } else if (hm) {
+            const markerTo = base + hm[0].length, level = hm[1].length;
+            ranges.push(Decoration.line({ class: `cm-live-heading-line cm-live-heading-${level}` }).range(base));
+            if (!selectionTouches(view, base, markerTo)) ranges.push(Decoration.replace({}).range(base, markerTo));
+            else ranges.push(Decoration.mark({ class: "cm-md-marker" }).range(base, markerTo));
+            if (markerTo < line.to) ranges.push(Decoration.mark({ class: `cm-live-heading-text cm-live-h${level}` }).range(markerTo, line.to));
           }
-          if (markerTo < line.to) ranges.push(Decoration.mark({ class: `cm-live-heading-text cm-live-h${level}` }).range(markerTo, line.to));
-        }
 
-        // Blockquotes get a visual rail; hide the > marker outside the active marker.
-        const qm = text.match(/^(\s*)>\s?/);
-        if (qm) {
-          const markerFrom = base + qm[1].length;
-          const markerTo = base + qm[0].length;
-          ranges.push(Decoration.line({ class: "cm-live-blockquote" }).range(base));
-          if (!selectionTouches(view, markerFrom, markerTo)) ranges.push(Decoration.replace({}).range(markerFrom, markerTo));
-        }
-
-        // Strong text.
-        const boldRe = /(\*\*|__)([^\n]+?)\1/g;
-        let bm;
-        while ((bm = boldRe.exec(text)) !== null) {
-          const from = base + bm.index;
-          const openTo = from + bm[1].length;
-          const innerTo = openTo + bm[2].length;
-          const to = innerTo + bm[1].length;
-          if (overlapsWiki(from, to)) continue;
-          ranges.push(Decoration.mark({ class: "cm-live-bold" }).range(openTo, innerTo));
-          if (!selectionTouches(view, from, to)) {
-            ranges.push(Decoration.replace({}).range(from, openTo));
-            ranges.push(Decoration.replace({}).range(innerTo, to));
-          } else {
-            ranges.push(Decoration.mark({ class: "cm-md-marker" }).range(from, openTo));
-            ranges.push(Decoration.mark({ class: "cm-md-marker" }).range(innerTo, to));
+          const qm = text.match(/^(\s*)>\s?/);
+          if (qm) {
+            const markerFrom = base + qm[1].length, markerTo = base + qm[0].length;
+            ranges.push(Decoration.line({ class: "cm-live-blockquote" }).range(base));
+            if (!selectionTouches(view, markerFrom, markerTo)) ranges.push(Decoration.replace({}).range(markerFrom, markerTo));
           }
-        }
 
-        // Italic text. Skip ** / __ pairs already handled above.
-        const italicRe = /(\*|_)([^\n]+?)\1/g;
-        let im;
-        while ((im = italicRe.exec(text)) !== null) {
-          const from = base + im.index;
-          const to = from + im[0].length;
-          const prev = text[im.index - 1] || "";
-          const next = text[im.index + im[0].length] || "";
-          if (prev === im[1] || next === im[1] || overlapsWiki(from, to)) continue;
-          const innerFrom = from + 1;
-          const innerTo = to - 1;
-          ranges.push(Decoration.mark({ class: "cm-live-italic" }).range(innerFrom, innerTo));
-          if (!selectionTouches(view, from, to)) {
-            ranges.push(Decoration.replace({}).range(from, innerFrom));
-            ranges.push(Decoration.replace({}).range(innerTo, to));
-          }
-        }
-
-        // Strikethrough and inline code.
-        for (const [re, cls, marker] of [
-          [/~~([^\n]+?)~~/g, "cm-live-strike", 2],
-          [/`([^`\n]+?)`/g, "cm-live-code", 1],
-        ]) {
-          let m;
-          while ((m = re.exec(text)) !== null) {
-            const from = base + m.index;
-            const to = from + m[0].length;
+          const boldRe = /(\*\*|__)([^\n]+?)\1/g; let bm;
+          while ((bm = boldRe.exec(text)) !== null) {
+            const from = base + bm.index, openTo = from + bm[1].length, innerTo = openTo + bm[2].length, to = innerTo + bm[1].length;
             if (overlapsWiki(from, to)) continue;
-            const innerFrom = from + marker;
-            const innerTo = to - marker;
-            ranges.push(Decoration.mark({ class: cls }).range(innerFrom, innerTo));
-            if (!selectionTouches(view, from, to)) {
-              ranges.push(Decoration.replace({}).range(from, innerFrom));
-              ranges.push(Decoration.replace({}).range(innerTo, to));
+            ranges.push(Decoration.mark({ class: "cm-live-bold" }).range(openTo, innerTo));
+            if (!selectionTouches(view, from, to)) { ranges.push(Decoration.replace({}).range(from, openTo)); ranges.push(Decoration.replace({}).range(innerTo, to)); }
+            else { ranges.push(Decoration.mark({ class: "cm-md-marker" }).range(from, openTo)); ranges.push(Decoration.mark({ class: "cm-md-marker" }).range(innerTo, to)); }
+          }
+
+          const italicRe = /(\*|_)([^\n]+?)\1/g; let im;
+          while ((im = italicRe.exec(text)) !== null) {
+            const from = base + im.index, to = from + im[0].length, prev = text[im.index - 1] || "", next = text[im.index + im[0].length] || "";
+            if (prev === im[1] || next === im[1] || overlapsWiki(from, to)) continue;
+            const innerFrom = from + 1, innerTo = to - 1;
+            ranges.push(Decoration.mark({ class: "cm-live-italic" }).range(innerFrom, innerTo));
+            if (!selectionTouches(view, from, to)) { ranges.push(Decoration.replace({}).range(from, innerFrom)); ranges.push(Decoration.replace({}).range(innerTo, to)); }
+          }
+
+          for (const [re, cls, marker] of [[/~~([^\n]+?)~~/g, "cm-live-strike", 2], [/`([^`\n]+?)`/g, "cm-live-code", 1]]) {
+            let m; while ((m = re.exec(text)) !== null) {
+              const from = base + m.index, to = from + m[0].length;
+              if (overlapsWiki(from, to)) continue;
+              const innerFrom = from + marker, innerTo = to - marker;
+              ranges.push(Decoration.mark({ class: cls }).range(innerFrom, innerTo));
+              if (!selectionTouches(view, from, to)) { ranges.push(Decoration.replace({}).range(from, innerFrom)); ranges.push(Decoration.replace({}).range(innerTo, to)); }
             }
           }
-        }
 
-        // Obsidian highlight ==text==.
-        const highlightRe = /==([^\n]+?)==/g;
-        let hlm;
-        while ((hlm = highlightRe.exec(text)) !== null) {
-          const from = base + hlm.index, to = from + hlm[0].length, innerFrom = from + 2, innerTo = to - 2;
-          if (overlapsWiki(from, to)) continue;
-          ranges.push(Decoration.mark({ class: "cm-live-highlight" }).range(innerFrom, innerTo));
-          if (!selectionTouches(view, from, to)) {
-            ranges.push(Decoration.replace({}).range(from, innerFrom));
-            ranges.push(Decoration.replace({}).range(innerTo, to));
+          const highlightRe = /==([^\n]+?)==/g; let hlm;
+          while ((hlm = highlightRe.exec(text)) !== null) {
+            const from = base + hlm.index, to = from + hlm[0].length, innerFrom = from + 2, innerTo = to - 2;
+            if (overlapsWiki(from, to)) continue;
+            ranges.push(Decoration.mark({ class: "cm-live-highlight" }).range(innerFrom, innerTo));
+            if (!selectionTouches(view, from, to)) { ranges.push(Decoration.replace({}).range(from, innerFrom)); ranges.push(Decoration.replace({}).range(innerTo, to)); }
           }
-        }
 
-        // Simple HTML underline kept compatible with Markdown/Obsidian.
-        const underlineRe = /<u>([^\n]+?)<\/u>/gi;
-        let ulm;
-        while ((ulm = underlineRe.exec(text)) !== null) {
-          const from = base + ulm.index, to = from + ulm[0].length, innerFrom = from + 3, innerTo = to - 4;
-          ranges.push(Decoration.mark({ class: "cm-live-underline" }).range(innerFrom, innerTo));
-          if (!selectionTouches(view, from, to)) {
-            ranges.push(Decoration.replace({}).range(from, innerFrom));
-            ranges.push(Decoration.replace({}).range(innerTo, to));
+          const underlineRe = /<u>([^\n]+?)<\/u>/gi; let ulm;
+          while ((ulm = underlineRe.exec(text)) !== null) {
+            const from = base + ulm.index, to = from + ulm[0].length, innerFrom = from + 3, innerTo = to - 4;
+            ranges.push(Decoration.mark({ class: "cm-live-underline" }).range(innerFrom, innerTo));
+            if (!selectionTouches(view, from, to)) { ranges.push(Decoration.replace({}).range(from, innerFrom)); ranges.push(Decoration.replace({}).range(innerTo, to)); }
           }
-        }
 
-        // Regular Markdown links: visually emphasize label and collapse destination while inactive.
-        const linkRe = /\[([^\]\n]+)\]\(([^)\n]+)\)/g;
-        let lm;
-        while ((lm = linkRe.exec(text)) !== null) {
-          const from = base + lm.index;
-          const labelFrom = from + 1;
-          const labelTo = labelFrom + lm[1].length;
-          const to = from + lm[0].length;
-          if (overlapsWiki(from, to)) continue;
-          ranges.push(Decoration.mark({ class: "cm-live-link" }).range(labelFrom, labelTo));
-          if (!selectionTouches(view, from, to)) {
-            ranges.push(Decoration.replace({}).range(from, labelFrom));
-            ranges.push(Decoration.replace({}).range(labelTo, to));
+          const linkRe = /\[([^\]\n]+)\]\(([^)\n]+)\)/g; let lm;
+          while ((lm = linkRe.exec(text)) !== null) {
+            const from = base + lm.index, labelFrom = from + 1, labelTo = labelFrom + lm[1].length, to = from + lm[0].length;
+            if (overlapsWiki(from, to)) continue;
+            ranges.push(Decoration.mark({ class: "cm-live-link" }).range(labelFrom, labelTo));
+            if (!selectionTouches(view, from, to)) { ranges.push(Decoration.replace({}).range(from, labelFrom)); ranges.push(Decoration.replace({}).range(labelTo, to)); }
           }
-        }
 
-        // Obsidian-like interactive task checkboxes. Source remains - [ ] / - [x].
-        const taskMatch = text.match(/^(\s*[-*+]\s+)\[([ xX])\](\s+)/);
-        if (taskMatch) {
-          ranges.push(Decoration.line({ class: "cm-live-task-line" }).range(base));
-          const markerFrom = base + taskMatch[1].length;
-          const markerTo = markerFrom + 3;
-          if (!selectionTouches(view, markerFrom, markerTo)) {
-            ranges.push(Decoration.replace({ widget: new TaskCheckboxWidget(/[xX]/.test(taskMatch[2]), markerFrom, markerTo) }).range(markerFrom, markerTo));
-          }
-        } else if (/^\s*[-*+]\s+/.test(text) || /^\s*\d+[.)]\s+/.test(text)) ranges.push(Decoration.line({ class: "cm-live-list-line" }).range(base));
+          // Task list: replace both the list dash and [ ] marker with one clean square checkbox.
+          const taskMatch = text.match(/^(\s*)([-*+])\s+\[([ xX])\](\s+)/);
+          if (taskMatch) {
+            ranges.push(Decoration.line({ class: "cm-live-task-line" }).range(base));
+            const markerFrom = base + taskMatch[1].length;
+            const markerTo = base + taskMatch[0].length - taskMatch[4].length;
+            if (!selectionTouches(view, markerFrom, markerTo)) ranges.push(Decoration.replace({ widget: new TaskCheckboxWidget(/[xX]/.test(taskMatch[3]), markerFrom, markerTo, taskMatch[2]) }).range(markerFrom, markerTo));
+          } else if (/^\s*[-*+]\s+/.test(text) || /^\s*\d+[.)]\s+/.test(text)) ranges.push(Decoration.line({ class: "cm-live-list-line" }).range(base));
+        }
       }
       if (line.to >= doc.length || line.to >= vr.to) break;
       pos = line.to + 1;
     }
   }
+  ranges.sort((a,b) => a.from - b.from || a.to - b.to);
   return Decoration.set(ranges, true);
 }
+
 
 const livePreviewDecorations = ViewPlugin.fromClass(class {
   constructor(view) { this.decorations = buildLiveDecorations(view); }
@@ -865,11 +942,11 @@ function secondaryToolbarAction(action) {
   if (action === "highlight") return secondaryReplaceSelection("==", "==", "выделенный текст");
   if (action === "link") return secondaryReplaceSelection("[", "](https://)", "текст ссылки");
   if (action === "inlinecode") return secondaryReplaceSelection("`", "`", "код");
-  if (action === "codeblock") return secondaryReplaceSelection("```\n", "\n```", "код");
+  if (action === "codeblock") { const lang = (prompt("Язык блока кода (например: javascript, python, glsl). Можно оставить пустым.", "") || "").trim(); return secondaryReplaceSelection("```" + lang + "\n", "\n```", "код"); }
   if (action === "image") { const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, "![описание](путь-к-изображению)"); return; }
   if (action === "hr") { const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, "\n---\n"); return; }
   if (action === "fullscreen") { document.body.classList.toggle("focus-mode"); return; }
-  if (action === "table") { const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, "| Столбец 1 | Столбец 2 |\n| --- | --- |\n| Значение | Значение |\n"); return; }
+  if (action === "table") { const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, "| Столбец 1 | Столбец 2 |\n| --- | --- |\n| Значение | Значение |\n\n"); return; }
   if (action === "quote") return secondaryPrefixLines(() => "> ");
   if (action === "wiki") { const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, "[[]]", sel.start + 2); return; }
   if (action === "h1") return secondaryPrefixLines(() => "# ");
@@ -1034,7 +1111,7 @@ function newNote(path = suggestedNewNotePath()) {
   path = path.toLowerCase().endsWith(".md") ? path : `${path}.md`;
   updatePrimaryPathUI(path);
   updateActiveNoteTitle(path);
-  setEditorMarkdown(`# ${noteName(path)}\n\n`);
+  setEditorMarkdown("");
   els.emptyState.classList.add("hidden");
   els.editorView.classList.remove("hidden");
   els.backlinksList.textContent = "—";
@@ -1066,6 +1143,158 @@ async function createFolder(baseOverride = null) {
     setSyncStatus("Готово");
     showToast(`Папка «${folder}» создана.`);
   } catch (e) { setSyncStatus("Ошибка"); showToast(`Не удалось создать папку: ${e.message}`); }
+}
+
+
+function normalizeRepoPath(path = "") {
+  return String(path).replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").replace(/\/{2,}/g, "/");
+}
+
+async function copyRepoPath(path) {
+  try { await navigator.clipboard.writeText(normalizeRepoPath(path)); showToast("Путь скопирован."); }
+  catch { showToast(normalizeRepoPath(path)); }
+}
+
+async function getBlobBase64(sha) {
+  const blob = await gh(`/repos/${encodeURIComponent(state.owner)}/${encodeURIComponent(state.repo)}/git/blobs/${encodeURIComponent(sha)}`);
+  if (blob.encoding !== "base64") throw new Error("GitHub вернул неподдерживаемый формат файла.");
+  return String(blob.content || "").replace(/\n/g, "");
+}
+
+async function putBase64File(path, content, message, overwriteSha = null) {
+  const body = { message, content, branch: state.branch };
+  if (overwriteSha) body.sha = overwriteSha;
+  return gh(`/repos/${encodeURIComponent(state.owner)}/${encodeURIComponent(state.repo)}/contents/${encodePath(path)}`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+}
+
+async function deleteRepoFile(path, sha, message) {
+  return gh(`/repos/${encodeURIComponent(state.owner)}/${encodeURIComponent(state.repo)}/contents/${encodePath(path)}`, {
+    method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message, sha, branch: state.branch }),
+  });
+}
+
+function existingFile(path) { return state.files.find(f => f.path === path) || null; }
+
+async function relocateFile(oldPath, newPath, { copy = false } = {}) {
+  oldPath = normalizeRepoPath(oldPath); newPath = normalizeRepoPath(newPath);
+  if (!oldPath || !newPath || oldPath === newPath) return newPath || oldPath;
+  const source = existingFile(oldPath);
+  if (!source) throw new Error(`Файл ${oldPath} не найден.`);
+  const target = existingFile(newPath);
+  if (target && target.path !== oldPath && !confirm(`${newPath} уже существует. Заменить?`)) throw new Error("Операция отменена.");
+  const content = await getBlobBase64(source.sha);
+  await putBase64File(newPath, content, `${copy ? "Copy" : "Move"} ${oldPath} to ${newPath}`, target?.sha || null);
+  if (!copy) await deleteRepoFile(oldPath, source.sha, `Remove old path ${oldPath}`);
+  return newPath;
+}
+
+async function renameNoteFile(path) {
+  const currentName = noteName(path);
+  const raw = prompt("Новое имя заметки", currentName);
+  if (!raw) return;
+  const clean = raw.trim().replace(/[\\/]/g, "-");
+  if (!clean) return;
+  const newPath = `${folderOf(path) ? folderOf(path) + "/" : ""}${clean}${clean.toLowerCase().endsWith(".md") ? "" : ".md"}`;
+  await performNoteRelocation(path, newPath, false);
+}
+
+async function moveNoteFile(path) {
+  const raw = prompt("Новый путь заметки", path);
+  if (!raw) return;
+  let newPath = normalizeRepoPath(raw);
+  if (!newPath.toLowerCase().endsWith(".md")) newPath += ".md";
+  await performNoteRelocation(path, newPath, false);
+}
+
+async function duplicateNoteFile(path) {
+  const base = path.replace(/\.md$/i, "");
+  const raw = prompt("Путь копии", `${base} — копия.md`);
+  if (!raw) return;
+  let newPath = normalizeRepoPath(raw);
+  if (!newPath.toLowerCase().endsWith(".md")) newPath += ".md";
+  await performNoteRelocation(path, newPath, true);
+}
+
+async function performNoteRelocation(oldPath, newPath, copy = false) {
+  try {
+    setSyncStatus(copy ? "Копирование…" : "Перемещение…");
+    const finalPath = await relocateFile(oldPath, newPath, { copy });
+    const primaryWas = state.current === oldPath;
+    const secondaryWas = state.secondary.path === oldPath;
+    await loadTree();
+    if (!copy && primaryWas) await openNote(finalPath);
+    else if (!copy && secondaryWas) await openInSplit(finalPath, state.splitOrientation, false);
+    setSyncStatus("Готово");
+    showToast(copy ? "Копия создана." : "Готово.");
+  } catch (e) { setSyncStatus("Ошибка"); showToast(e.message || "Операция не выполнена."); }
+}
+
+async function deleteNoteFile(path) {
+  if (!confirm(`Удалить заметку «${noteName(path)}»? Это удалит файл из vault.`)) return;
+  try {
+    const file = existingFile(path); if (!file) throw new Error("Файл не найден.");
+    await deleteRepoFile(path, file.sha, `Delete ${path}`);
+    if (state.current === path) { state.current = null; state.currentSha = null; els.editorView.classList.add("hidden"); els.emptyState.classList.remove("hidden"); updateActiveNoteTitle(null); }
+    if (state.secondary.path === path) closeSplit();
+    await loadTree();
+    showToast("Заметка удалена.");
+  } catch (e) { showToast(`Не удалось удалить: ${e.message}`); }
+}
+
+async function relocateFolder(oldFolder, newFolder) {
+  oldFolder = normalizeRepoPath(oldFolder); newFolder = normalizeRepoPath(newFolder);
+  if (!oldFolder || !newFolder || oldFolder === newFolder) return;
+  if (newFolder.startsWith(oldFolder + "/")) throw new Error("Нельзя переместить папку внутрь самой себя.");
+  const items = state.files.filter(f => f.path === oldFolder || f.path.startsWith(oldFolder + "/"));
+  if (!items.length) throw new Error("Папка пуста или не найдена.");
+  const targets = items.map(f => ({ source: f, path: newFolder + f.path.slice(oldFolder.length) }));
+  const conflicts = targets.filter(t => existingFile(t.path) && !items.some(i => i.path === t.path));
+  if (conflicts.length) throw new Error(`В папке назначения уже есть ${conflicts.length} конфликтующих файлов.`);
+  setSyncStatus("Перемещение папки…");
+  for (const item of targets) {
+    const content = await getBlobBase64(item.source.sha);
+    await putBase64File(item.path, content, `Move ${item.source.path} to ${item.path}`);
+  }
+  for (const item of items.slice().reverse()) await deleteRepoFile(item.path, item.sha, `Remove old path ${item.path}`);
+  const mapPath = p => p && (p === oldFolder || p.startsWith(oldFolder + "/")) ? newFolder + p.slice(oldFolder.length) : p;
+  const oldPrimary = state.current, oldSecondary = state.secondary.path;
+  state.current = mapPath(state.current); state.secondary.path = mapPath(state.secondary.path); state.selectedFolder = newFolder;
+  state.expandedFolders = new Set(Array.from(state.expandedFolders).map(mapPath));
+  await loadTree();
+  if (oldPrimary && oldPrimary !== state.current) await openNote(state.current);
+  if (oldSecondary && oldSecondary !== state.secondary.path && els.paneHost.classList.contains("split-active")) await openInSplit(state.secondary.path, state.splitOrientation, false);
+  setSyncStatus("Готово");
+}
+
+async function renameFolder(path) {
+  const parts = normalizeRepoPath(path).split("/"); const oldName = parts.pop(); const parent = parts.join("/");
+  const raw = prompt("Новое имя папки", oldName); if (!raw) return;
+  const name = raw.trim().replace(/[\\/]/g, "-"); if (!name) return;
+  try { await relocateFolder(path, `${parent ? parent + "/" : ""}${name}`); showToast("Папка переименована."); }
+  catch (e) { setSyncStatus("Ошибка"); showToast(e.message); }
+}
+
+async function moveFolderPrompt(path) {
+  const oldName = normalizeRepoPath(path).split("/").pop();
+  const raw = prompt("Папка назначения (оставь пустым для корня)", folderOf(path)); if (raw === null) return;
+  const parent = normalizeRepoPath(raw);
+  try { await relocateFolder(path, `${parent ? parent + "/" : ""}${oldName}`); showToast("Папка перемещена."); }
+  catch (e) { setSyncStatus("Ошибка"); showToast(e.message); }
+}
+
+async function deleteFolder(path) {
+  const items = state.files.filter(f => f.path.startsWith(normalizeRepoPath(path) + "/"));
+  if (!items.length) return showToast("Папка уже пуста.");
+  if (!confirm(`Удалить папку «${path}» и все файлы внутри (${items.length})?`)) return;
+  try {
+    setSyncStatus("Удаление папки…");
+    for (const item of items.slice().reverse()) await deleteRepoFile(item.path, item.sha, `Delete ${item.path}`);
+    if (state.current?.startsWith(path + "/")) { state.current = null; state.currentSha = null; els.editorView.classList.add("hidden"); els.emptyState.classList.remove("hidden"); updateActiveNoteTitle(null); }
+    if (state.secondary.path?.startsWith(path + "/")) closeSplit();
+    state.selectedFolder = ""; await loadTree(); setSyncStatus("Готово"); showToast("Папка удалена.");
+  } catch (e) { setSyncStatus("Ошибка"); showToast(`Не удалось удалить папку: ${e.message}`); }
 }
 
 function createFromMissingLink(target) {
@@ -1193,8 +1422,8 @@ function toolbarAction(action) {
   if (action === "link") return replaceSelection("[", "](https://)", "текст ссылки");
   if (action === "image") return insertAtCursor("![описание](путь-к-изображению)");
   if (action === "inlinecode" || action === "code") return replaceSelection("`", "`", "код");
-  if (action === "codeblock") return replaceSelection("```\n", "\n```", "код");
-  if (action === "table") return insertAtCursor("| Столбец 1 | Столбец 2 |\n| --- | --- |\n| Значение | Значение |\n");
+  if (action === "codeblock") { const lang = (prompt("Язык блока кода (например: javascript, python, glsl). Можно оставить пустым.", "") || "").trim(); return replaceSelection("```" + lang + "\n", "\n```", "код"); }
+  if (action === "table") return insertAtCursor("| Столбец 1 | Столбец 2 |\n| --- | --- |\n| Значение | Значение |\n\n");
   if (action === "hr") return insertAtCursor("\n---\n");
   if (action === "fullscreen") { document.body.classList.toggle("focus-mode"); return; }
   if (action === "h1") return prefixSelectedLines(() => "# ");
@@ -1342,6 +1571,9 @@ function setMode(mode) {
   if (graph) {
     els.sidebar.classList.remove("open");
     buildGraph();
+  } else if (state.graph.ambientFrame) {
+    cancelAnimationFrame(state.graph.ambientFrame);
+    state.graph.ambientFrame = null;
   }
 }
 
@@ -1411,93 +1643,88 @@ function renderGraph(nodes, links) {
   const svg = d3.select(els.graphSvg);
   svg.selectAll("*").remove();
   if (state.graph.simulation) state.graph.simulation.stop();
+  if (state.graph.ambientFrame) cancelAnimationFrame(state.graph.ambientFrame);
 
   const rect = els.graphSvg.getBoundingClientRect();
-  const width = Math.max(320, rect.width || 900);
-  const height = Math.max(320, rect.height || 650);
+  const width = Math.max(320, rect.width || 900), height = Math.max(320, rect.height || 650);
   svg.attr("viewBox", [0, 0, width, height]);
-
   const root = svg.append("g");
-  const link = root.append("g")
-    .selectAll("line")
-    .data(links)
-    .join("line")
+
+  nodes.forEach((d, i) => { d._phase = (i * 1.618 + (d.id?.length || 1)) % (Math.PI * 2); d._amp = 1.2 + (i % 4) * .45; d._dragMoved = false; });
+
+  const link = root.append("g").selectAll("line").data(links).join("line")
     .attr("class", "graph-link")
-    .attr("stroke-width", d => 1 + Math.min(1.5, ((d.source.degree || 0) + (d.target.degree || 0)) / 20));
-
-  const node = root.append("g")
-    .selectAll("g")
-    .data(nodes, d => d.id)
-    .join("g")
+    .attr("stroke-width", d => 1 + Math.min(1.3, ((d.source.degree || 0) + (d.target.degree || 0)) / 24));
+  const node = root.append("g").selectAll("g").data(nodes, d => d.id).join("g")
     .attr("class", d => `graph-node ${d.missing ? "missing" : ""}`)
-    .style("cursor", d => d.missing ? "default" : "pointer");
-
-  node.append("circle")
-    .attr("r", d => 5 + Math.min(8, Math.sqrt(d.degree || 0) * 2));
-
-  node.append("text")
-    .attr("x", d => 9 + Math.min(8, Math.sqrt(d.degree || 0) * 2))
-    .attr("y", 4)
-    .text(d => d.label);
+    .style("cursor", d => d.missing ? "default" : "grab");
+  node.append("circle").attr("r", d => 5 + Math.min(8, Math.sqrt(d.degree || 0) * 2));
+  node.append("text").attr("x", d => 9 + Math.min(8, Math.sqrt(d.degree || 0) * 2)).attr("y", 4).text(d => d.label);
 
   const simulation = d3.forceSimulation(nodes)
-    .force("link", d3.forceLink(links).id(d => d.id).distance(d => 70 + Math.min(80, ((d.source.degree || 0) + (d.target.degree || 0)) * 4)).strength(.65))
-    .force("charge", d3.forceManyBody().strength(d => -90 - Math.min(220, (d.degree || 0) * 14)))
+    .force("link", d3.forceLink(links).id(d => d.id).distance(d => 78 + Math.min(92, ((d.source.degree || 0) + (d.target.degree || 0)) * 4)).strength(.48))
+    .force("charge", d3.forceManyBody().strength(d => -105 - Math.min(210, (d.degree || 0) * 12)))
     .force("center", d3.forceCenter(width / 2, height / 2))
-    .force("x", d3.forceX(width / 2).strength(.008))
-    .force("y", d3.forceY(height / 2).strength(.008))
-    .force("collision", d3.forceCollide().radius(d => 25 + Math.min(20, (d.degree || 0) * 2)))
-    .velocityDecay(.5)
-    .alphaDecay(.035)
-    .on("tick", () => {
-      link
-        .attr("x1", d => d.source.x)
-        .attr("y1", d => d.source.y)
-        .attr("x2", d => d.target.x)
-        .attr("y2", d => d.target.y);
-      node.attr("transform", d => `translate(${d.x},${d.y})`);
-    });
+    .force("x", d3.forceX(width / 2).strength(.006))
+    .force("y", d3.forceY(height / 2).strength(.006))
+    .force("collision", d3.forceCollide().radius(d => 27 + Math.min(22, (d.degree || 0) * 2)).strength(.85))
+    .velocityDecay(.34).alphaDecay(.055);
 
-  const drag = d3.drag()
+  const visual = (d, t) => {
+    if (d._dragging) return [d.x || 0, d.y || 0];
+    const drift = d._pinned ? .7 : 1;
+    return [(d.x || 0) + Math.sin(t * .00038 + d._phase) * d._amp * drift, (d.y || 0) + Math.cos(t * .00031 + d._phase * 1.27) * d._amp * drift];
+  };
+  const frame = t => {
+    const positions = new Map();
+    nodes.forEach(d => positions.set(d.id, visual(d, t)));
+    link.attr("x1", d => positions.get(d.source.id || d.source)?.[0] ?? d.source.x)
+        .attr("y1", d => positions.get(d.source.id || d.source)?.[1] ?? d.source.y)
+        .attr("x2", d => positions.get(d.target.id || d.target)?.[0] ?? d.target.x)
+        .attr("y2", d => positions.get(d.target.id || d.target)?.[1] ?? d.target.y);
+    node.attr("transform", d => { const [x,y] = positions.get(d.id) || [d.x,d.y]; return `translate(${x},${y})`; });
+    state.graph.ambientFrame = requestAnimationFrame(frame);
+  };
+  state.graph.ambientFrame = requestAnimationFrame(frame);
+
+  const drag = d3.drag().container(root.node())
     .on("start", (event, d) => {
-      if (!event.active) simulation.alphaTarget(.25).restart();
+      d._dragging = true; d._dragMoved = false; d._dragStartX = event.x; d._dragStartY = event.y;
+      if (!event.active) simulation.alphaTarget(.12).restart();
       d.fx = d.x; d.fy = d.y;
+      d3.select(event.sourceEvent?.currentTarget || null).style?.("cursor", "grabbing");
     })
     .on("drag", (event, d) => {
-      d.fx = event.x; d.fy = event.y;
+      if (Math.hypot(event.x - d._dragStartX, event.y - d._dragStartY) > 3) d._dragMoved = true;
+      d.fx = event.x; d.fy = event.y; d.x = event.x; d.y = event.y;
     })
     .on("end", (event, d) => {
-      if (!event.active) simulation.alphaTarget(.012);
-      d.fx = null; d.fy = null;
+      d._dragging = false; d._pinned = true; d.fx = d.x; d.fy = d.y;
+      if (!event.active) simulation.alphaTarget(0);
+      setTimeout(() => { d._dragMoved = false; }, 80);
     });
   node.call(drag);
 
   node.on("click", (event, d) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (d.path) {
-      setMode("notes");
-      openNote(d.path);
-    }
+    event.preventDefault(); event.stopPropagation();
+    if (d._dragMoved || !d.path) return;
+    setMode("notes"); openNoteInActivePane(d.path);
+  });
+  node.on("dblclick", (event, d) => {
+    event.preventDefault(); event.stopPropagation();
+    d._pinned = false; d.fx = null; d.fy = null; simulation.alpha(.22).restart();
+    showToast("Узел снова свободно участвует в раскладке.");
   });
 
-  // Keep a very subtle living motion, similar to Obsidian's graph.
-  simulation.alphaTarget(.012).restart();
+  const zoom = d3.zoom().scaleExtent([0.12, 5]).on("zoom", event => root.attr("transform", event.transform));
+  svg.call(zoom).on("dblclick.zoom", null);
 
-  const zoom = d3.zoom()
-    .scaleExtent([0.12, 5])
-    .on("zoom", event => root.attr("transform", event.transform));
-  svg.call(zoom);
-
-  state.graph.simulation = simulation;
-  state.graph.zoom = zoom;
-  state.graph.svg = svg;
-  state.graph.root = root;
-  state.graph.nodeSelection = node;
-  state.graph.linkSelection = link;
-  setTimeout(() => fitGraph(false), 500);
+  state.graph.simulation = simulation; state.graph.zoom = zoom; state.graph.svg = svg; state.graph.root = root;
+  state.graph.nodeSelection = node; state.graph.linkSelection = link;
+  setTimeout(() => fitGraph(false), 650);
   applyGraphSearch();
 }
+
 
 function fitGraph(animate = true) {
   const { svg, zoom, root } = state.graph;
@@ -1682,6 +1909,50 @@ els.paneSplitter.addEventListener("pointerdown", e => {
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp, { once: true });
 });
+
+function restorePanelWidths() {
+  const left = Number(localStorage.getItem("pv_sidebar_width"));
+  const right = Number(localStorage.getItem("pv_context_width"));
+  if (Number.isFinite(left) && left >= 180 && left <= 520) document.documentElement.style.setProperty("--sidebar", `${left}px`);
+  if (Number.isFinite(right) && right >= 200 && right <= 520) document.documentElement.style.setProperty("--context", `${right}px`);
+}
+
+function setupSidebarResizer(handle, side) {
+  if (!handle) return;
+  handle.addEventListener("pointerdown", e => {
+    if (window.matchMedia("(max-width: 980px)").matches) return;
+    e.preventDefault(); handle.classList.add("dragging"); handle.setPointerCapture?.(e.pointerId);
+    const appRect = els.appView.getBoundingClientRect();
+    const ribbon = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--ribbon")) || 44;
+    const move = ev => {
+      const width = side === "left" ? ev.clientX - appRect.left - ribbon : appRect.right - ev.clientX;
+      const clamped = Math.max(side === "left" ? 180 : 200, Math.min(520, width));
+      document.documentElement.style.setProperty(side === "left" ? "--sidebar" : "--context", `${clamped}px`);
+    };
+    const up = ev => {
+      handle.classList.remove("dragging"); window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
+      const value = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(side === "left" ? "--sidebar" : "--context"));
+      localStorage.setItem(side === "left" ? "pv_sidebar_width" : "pv_context_width", String(value));
+    };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up, { once: true });
+  });
+  handle.addEventListener("dblclick", () => {
+    const value = side === "left" ? 270 : 285;
+    document.documentElement.style.setProperty(side === "left" ? "--sidebar" : "--context", `${value}px`);
+    localStorage.removeItem(side === "left" ? "pv_sidebar_width" : "pv_context_width");
+  });
+}
+restorePanelWidths(); setupSidebarResizer(els.leftSidebarResizer, "left"); setupSidebarResizer(els.rightSidebarResizer, "right");
+
+els.fileList.addEventListener("contextmenu", e => {
+  if (e.target !== els.fileList) return;
+  e.preventDefault(); state.selectedFolder = "";
+  showFloatingMenu([
+    { label: "Новая заметка", shortcut: "Ctrl+N", action: () => newNote() },
+    { label: "Новая папка", shortcut: "Ctrl+Shift+N", action: () => createFolder("") },
+  ], e.clientX, e.clientY);
+});
+
 els.editorText.addEventListener("input", () => {
   if (state.editorMode !== "raw") return;
   updateWikiSuggestions();
