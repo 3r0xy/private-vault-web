@@ -4,14 +4,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="color-scheme" content="light dark" />
-  <title>Private Vault</title>
-  <link rel="stylesheet" href="./styles.css?v=0.9.3" />
+  <title>note</title>
+  <link rel="stylesheet" href="./styles.css?v=1.0" />
 </head>
 <body>
   <div id="loginView" class="screen center">
     <div class="card login-card">
       <div class="login-mark">◈</div>
-      <h1>Private Vault</h1>
+      <h1>note</h1>
       <p class="muted">Личный vault в private GitHub repository.</p>
       <label>GitHub owner<input id="ownerInput" autocomplete="username" placeholder="your-github-name" /></label>
       <label>Repository<input id="repoInput" placeholder="my-private-vault" /></label>
@@ -55,7 +55,7 @@
     <!-- File explorer -->
     <aside id="sidebar" class="sidebar">
       <div class="sidebar-titlebar">
-        <strong id="vaultTitle">Private Vault</strong>
+        <strong id="vaultTitle">note</strong>
         <div class="explorer-actions">
           <button id="newNoteSidebarBtn" class="icon-mini" title="Новая заметка · Ctrl+N" aria-label="Новая заметка">＋</button>
           <button id="newFolderBtn" class="icon-mini" title="Новая папка · Ctrl+Shift+N" aria-label="Новая папка">⌑＋</button>
@@ -232,10 +232,11 @@
     <!-- No visible import button: Ctrl+Alt+I -->
     <input id="vaultImport" type="file" webkitdirectory directory multiple hidden />
     <input id="imageInput" type="file" accept="image/*" hidden />
+    <input id="highlightColorInput" class="color-picker-proxy" type="color" value="#ffd84d" tabindex="-1" aria-hidden="true" />
     <div id="toast" class="toast hidden"></div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
-  <script type="module" src="./app-v0.9.3.js"></script>
+  <script type="module" src="./app-v1.0.js"></script>
 </body>
 </html>

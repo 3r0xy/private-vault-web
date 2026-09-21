@@ -516,3 +516,76 @@ button.crumb:hover { color: var(--text); background: var(--panel-3); }
   margin-top: 6px;
   margin-bottom: 14px;
 }
+
+/* v1.0 — stable inline editor primitives */
+.cm-live-wiki-target {
+  color: var(--accent);
+  background: var(--soft-accent);
+  border-radius: 4px;
+  padding: 0 .12em;
+  text-decoration: none;
+}
+.cm-live-wiki-target.missing {
+  color: var(--muted);
+  background: color-mix(in srgb, var(--muted) 10%, transparent);
+  text-decoration: underline dashed;
+  text-underline-offset: .15em;
+}
+.cm-live-link { cursor: pointer; }
+.cm-live-color-highlight { border-radius: 3px; padding: 0 .08em; color: #161616; }
+.cm-color-markup { opacity: .22; }
+
+/* Keep task-list source text in the document, but render it as one native-looking square.
+   No Decoration.replace() is used, which keeps cursor movement smooth. */
+.cm-task-marker {
+  font-size: 0 !important;
+  line-height: 0 !important;
+  display: inline-flex;
+  width: 15px;
+  height: 15px;
+  margin: 0 8px 0 0;
+  vertical-align: -2px;
+  border: 1.5px solid color-mix(in srgb, var(--muted) 78%, transparent);
+  border-radius: 3px;
+  background: transparent;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+}
+.cm-task-marker.checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.cm-task-marker.checked::after {
+  content: "✓";
+  color: white;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+/* Markdown '-', '*' and '+' are visually presented as proper bullet dots. */
+.cm-bullet-marker {
+  font-size: 0 !important;
+  display: inline-block;
+  width: 14px;
+  min-width: 14px;
+  text-align: center;
+  user-select: none;
+}
+.cm-bullet-marker::before {
+  content: "•";
+  font-size: 15px;
+  line-height: 1;
+  color: currentColor;
+}
+.color-picker-proxy {
+  position: fixed !important;
+  left: -100px !important;
+  top: -100px !important;
+  width: 1px !important;
+  height: 1px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
