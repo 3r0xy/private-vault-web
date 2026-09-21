@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Private Vault</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="loginView" class="screen center">
+    <div class="card login-card">
+      <h1>Private Vault</h1>
+      <p class="muted">Твои заметки остаются в private GitHub repository.</p>
+      <label>GitHub owner<input id="ownerInput" autocomplete="username" placeholder="your-github-name" /></label>
+      <label>Repository<input id="repoInput" placeholder="my-vault" /></label>
+      <label>Fine-grained token<input id="tokenInput" type="password" autocomplete="off" placeholder="github_pat_..." /></label>
+      <button id="connectBtn">Открыть vault</button>
+      <p id="loginError" class="error"></p>
+      <details><summary>Зачем нужен token?</summary><p class="small">Он даёт браузеру доступ к выбранному private-репозиторию. В этой версии token хранится только в sessionStorage текущей браузерной сессии.</p></details>
+    </div>
+  </div>
+
+  <div id="appView" class="app hidden">
+    <header class="topbar">
+      <button id="menuBtn" class="icon-btn" aria-label="Меню">☰</button>
+      <strong id="vaultTitle">Private Vault</strong>
+      <div class="mode-switch" aria-label="Режим">
+        <button id="notesModeBtn" class="secondary active">Заметки</button>
+        <button id="graphModeBtn" class="secondary">Граф</button>
+      </div>
+      <div class="top-actions">
+        <button id="newBtn">+ Заметка</button>
+        <label class="button-like">Импорт Obsidian<input id="vaultImport" type="file" webkitdirectory directory multiple hidden /></label>
+        <button id="logoutBtn" class="secondary">Выйти</button>
+      </div>
+    </header>
+
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-head"><input id="searchInput" placeholder="Поиск заметок..." /></div>
+      <div id="fileList" class="file-list"></div>
+    </aside>
+
+    <main class="main">
+      <section id="notesWorkspace" class="workspace">
+        <section id="emptyState" class="empty-state">
+          <h2>Vault подключён</h2>
+          <p>Выбери заметку слева, создай новую или импортируй существующий Obsidian vault.</p>
+          <p class="muted small">Подсказка: начни печатать <code>[[</code>, чтобы выбрать заметку для ссылки.</p>
+        </section>
+
+        <section id="editorView" class="editor hidden">
+          <div class="editor-toolbar">
+            <input id="pathInput" class="path-input" aria-label="Путь заметки" />
+            <div class="editor-buttons">
+              <button id="previewBtn" class="secondary active">Live Preview</button>
+              <button id="editBtn" class="secondary">Markdown</button>
+              <button id="saveBtn">Сохранить</button>
+            </div>
+          </div>
+
+          <div id="formatToolbar" class="format-toolbar" aria-label="Форматирование">
+            <button class="tool-btn" data-action="undo" title="Отменить">↶</button>
+            <button class="tool-btn" data-action="redo" title="Повторить">↷</button>
+            <span class="tool-sep"></span>
+            <button class="tool-btn" data-action="h1" title="Заголовок 1">H1</button>
+            <button class="tool-btn" data-action="h2" title="Заголовок 2">H2</button>
+            <button class="tool-btn" data-action="bold" title="Жирный"><b>B</b></button>
+            <button class="tool-btn" data-action="italic" title="Курсив"><i>I</i></button>
+            <span class="tool-sep"></span>
+            <button class="tool-btn" data-action="wiki" title="Ссылка на заметку">[[ ]]</button>
+            <button class="tool-btn" data-action="link" title="Обычная ссылка">🔗</button>
+            <button class="tool-btn" data-action="bullet" title="Маркированный список">•</button>
+            <button class="tool-btn" data-action="numbered" title="Нумерованный список">1.</button>
+            <button class="tool-btn" data-action="todo" title="Чекбокс">☑</button>
+            <button class="tool-btn" data-action="quote" title="Цитата">❝</button>
+            <button class="tool-btn" data-action="code" title="Код">&lt;/&gt;</button>
+            <button class="tool-btn" data-action="image" title="Изображение">🖼</button>
+          </div>
+
+          <div class="editor-body">
+            <div id="liveEditorHost" class="live-editor-host" aria-label="Live Preview редактор"></div>
+            <textarea id="editorText" class="raw-editor hidden" spellcheck="true" aria-label="Исходный Markdown"></textarea>
+            <div id="wikiSuggest" class="wiki-suggest hidden" role="listbox"></div>
+          </div>
+
+          <div class="link-panels">
+            <section class="backlinks"><h3>Обратные ссылки</h3><div id="backlinksList" class="muted">—</div></section>
+            <section class="backlinks"><h3>Исходящие ссылки</h3><div id="outgoingList" class="muted">—</div></section>
+          </div>
+        </section>
+      </section>
+
+      <section id="graphWorkspace" class="graph-workspace hidden">
+        <div class="graph-toolbar">
+          <div><strong>Граф связей</strong><span id="graphStats" class="muted small"></span></div>
+          <div class="graph-controls">
+            <input id="graphSearch" placeholder="Найти заметку..." />
+            <label class="graph-toggle"><input id="showMissingToggle" type="checkbox" /> Нерешённые ссылки</label>
+            <button id="graphRefreshBtn" class="secondary">Обновить</button>
+            <button id="graphFitBtn" class="secondary">Вместить</button>
+          </div>
+        </div>
+        <div id="graphLoading" class="graph-loading hidden">Строю индекс связей…</div>
+        <svg id="graphSvg" class="graph-svg" aria-label="Граф заметок"></svg>
+        <div class="graph-help">Колесо/щипок — масштаб · перетаскивание фона — движение · перетащи узел · кликни узел, чтобы открыть заметку</div>
+      </section>
+    </main>
+    <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
