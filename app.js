@@ -21,6 +21,9 @@ const state = {
   editorMode: "live",
   editorView: null,
   syncingEditor: false,
+  expandedFolders: new Set(),
+  splitOrientation: "vertical",
+  secondary: { path: null, sha: null, mode: "live", editorView: null, syncing: false },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -38,6 +41,13 @@ const els = {
   notesWorkspace: $("notesWorkspace"), graphWorkspace: $("graphWorkspace"), notesModeBtn: $("notesModeBtn"), graphModeBtn: $("graphModeBtn"),
   graphSvg: $("graphSvg"), graphLoading: $("graphLoading"), graphStats: $("graphStats"), graphRefreshBtn: $("graphRefreshBtn"), graphFitBtn: $("graphFitBtn"),
   graphSearch: $("graphSearch"), showMissingToggle: $("showMissingToggle"),
+  activeNoteTitle: $("activeNoteTitle"), searchRibbonBtn: $("searchRibbonBtn"), rightPanelBtn: $("rightPanelBtn"),
+  contextSidebar: $("contextSidebar"), branchStatus: $("branchStatus"), syncStatus: $("syncStatus"),
+  statusWords: $("statusWords"), statusChars: $("statusChars"),
+  paneHost: $("paneHost"), primaryPane: $("primaryPane"), secondaryPane: $("secondaryPane"), paneSplitter: $("paneSplitter"), splitBtn: $("splitBtn"),
+  secondaryNoteTitle: $("secondaryNoteTitle"), secondaryPathInput: $("secondaryPathInput"), secondaryLiveEditorHost: $("secondaryLiveEditorHost"),
+  secondaryEditorText: $("secondaryEditorText"), secondaryPreviewBtn: $("secondaryPreviewBtn"), secondaryEditBtn: $("secondaryEditBtn"),
+  secondarySaveBtn: $("secondarySaveBtn"), secondaryCloseBtn: $("secondaryCloseBtn"), secondaryFormatToolbar: $("secondaryFormatToolbar"),
 };
 
 function headers(extra = {}) {
@@ -82,6 +92,106 @@ function showToast(text) {
   showToast.timer = setTimeout(() => els.toast.classList.add("hidden"), 2400);
 }
 
+function updateDocumentStatus(text = "") {
+  const plain = String(text).replace(/```[\s\S]*?```/g, " ").replace(/[#>*_`~\[\]()!-]/g, " ");
+  const words = (plain.match(/[\p{L}\p{N}]+(?:[-’'][\p{L}\p{N}]+)*/gu) || []).length;
+  els.statusWords.textContent = `Слов: ${words}`;
+  els.statusChars.textContent = `Символов: ${String(text).length}`;
+}
+
+function updateActiveNoteTitle(path = null) {
+  els.activeNoteTitle.textContent = path ? noteName(path) : "Новая вкладка";
+}
+
+function closeFloatingMenu() {
+  document.querySelectorAll(".floating-menu").forEach(el => el.remove());
+}
+
+function showFloatingMenu(items, x, y) {
+  closeFloatingMenu();
+  const menu = document.createElement("div");
+  menu.className = "floating-menu";
+  for (const item of items) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = item.label;
+    btn.onclick = () => { closeFloatingMenu(); item.action(); };
+    menu.appendChild(btn);
+  }
+  menu.addEventListener("pointerdown", e => e.stopPropagation());
+  document.body.appendChild(menu);
+  const pad = 8;
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(pad, Math.min(x, window.innerWidth - rect.width - pad))}px`;
+  menu.style.top = `${Math.max(pad, Math.min(y, window.innerHeight - rect.height - pad))}px`;
+  setTimeout(() => document.addEventListener("pointerdown", closeFloatingMenu, { once: true }), 0);
+}
+
+function attachFileOpenHandlers(button, path) {
+  button.onclick = () => openNote(path);
+  button.oncontextmenu = e => {
+    e.preventDefault();
+    showFloatingMenu([
+      { label: "Открыть", action: () => openNote(path) },
+      { label: "Открыть справа", action: () => openInSplit(path, "vertical") },
+      { label: "Открыть снизу", action: () => openInSplit(path, "horizontal") },
+    ], e.clientX, e.clientY);
+  };
+}
+
+function setSplitOrientation(orientation) {
+  if (orientation === "vertical" && window.innerWidth < 720) orientation = "horizontal";
+  state.splitOrientation = orientation;
+  els.paneHost.classList.remove("split-vertical", "split-horizontal");
+  els.paneHost.classList.add("split-active", orientation === "vertical" ? "split-vertical" : "split-horizontal");
+  els.primaryPane.style.flexBasis = "50%";
+  els.secondaryPane.style.flexBasis = "50%";
+  els.secondaryPane.classList.remove("hidden");
+  els.paneSplitter.classList.remove("hidden");
+}
+
+function closeSplit() {
+  els.paneHost.classList.remove("split-active", "split-vertical", "split-horizontal");
+  els.secondaryPane.classList.add("hidden");
+  els.paneSplitter.classList.add("hidden");
+  els.primaryPane.style.flexBasis = "";
+  els.secondaryPane.style.flexBasis = "";
+  state.secondary.path = null;
+  state.secondary.sha = null;
+}
+
+function showSplitMenu(anchor = els.splitBtn) {
+  if (!state.current) return showToast("Сначала открой заметку.");
+  const rect = anchor.getBoundingClientRect();
+  showFloatingMenu([
+    { label: "Разделить справа", action: () => openInSplit(state.current, "vertical") },
+    { label: "Разделить снизу", action: () => openInSplit(state.current, "horizontal") },
+    ...(els.paneHost.classList.contains("split-active") ? [{ label: "Закрыть вторую область", action: closeSplit }] : []),
+  ], rect.left, rect.bottom + 4);
+}
+
+function setSyncStatus(text) {
+  els.syncStatus.textContent = text;
+}
+
+function toggleSidebar() {
+  if (window.matchMedia("(max-width: 980px)").matches) {
+    els.sidebar.classList.toggle("open");
+  } else {
+    els.appView.classList.toggle("sidebar-collapsed");
+  }
+}
+
+function toggleContextSidebar() {
+  if (window.matchMedia("(max-width: 980px)").matches) {
+    els.contextSidebar.classList.toggle("open");
+    els.rightPanelBtn.classList.toggle("active", els.contextSidebar.classList.contains("open"));
+  } else {
+    els.appView.classList.toggle("context-collapsed");
+    els.rightPanelBtn.classList.toggle("active", !els.appView.classList.contains("context-collapsed"));
+  }
+}
+
 async function connect() {
   els.loginError.textContent = "";
   state.owner = els.ownerInput.value.trim();
@@ -102,7 +212,8 @@ async function connect() {
     sessionStorage.setItem("pv_repo", state.repo);
     sessionStorage.setItem("pv_token", state.token);
 
-    els.vaultTitle.textContent = `${state.owner}/${state.repo}`;
+    els.vaultTitle.textContent = state.repo;
+    els.branchStatus.textContent = state.branch;
     await loadTree();
 
     els.loginView.classList.add("hidden");
@@ -129,24 +240,86 @@ function noteName(path) {
   return path.split("/").pop().replace(/\.md$/i, "");
 }
 
+function buildFileTree(notes) {
+  const root = { folders: new Map(), files: [] };
+  for (const note of notes.slice().sort((a, b) => a.path.localeCompare(b.path, "ru"))) {
+    const parts = note.path.split("/");
+    const filename = parts.pop();
+    let node = root;
+    let currentPath = "";
+    for (const part of parts) {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      if (!node.folders.has(part)) node.folders.set(part, { folders: new Map(), files: [], path: currentPath });
+      node = node.folders.get(part);
+    }
+    node.files.push({ ...note, filename });
+  }
+  return root;
+}
+
 function renderFileList(filter = "") {
   const q = filter.trim().toLowerCase();
-  const notes = state.notes.filter(n => n.path.toLowerCase().includes(q));
   els.fileList.innerHTML = "";
 
-  if (!notes.length) {
-    els.fileList.innerHTML = `<p class="muted small" style="padding:10px">Markdown-файлы не найдены.</p>`;
+  if (q) {
+    const matches = state.notes
+      .filter(n => n.path.toLowerCase().includes(q))
+      .sort((a, b) => a.path.localeCompare(b.path, "ru"));
+    if (!matches.length) {
+      els.fileList.innerHTML = `<p class="muted small" style="padding:8px">Ничего не найдено.</p>`;
+      return;
+    }
+    for (const note of matches) {
+      const btn = document.createElement("button");
+      btn.className = `file-item ${state.current === note.path ? "active" : ""}`;
+      const folder = note.path.includes("/") ? note.path.slice(0, note.path.lastIndexOf("/")) : "";
+      btn.innerHTML = `<span class="file-icon">◇</span><span class="file-name">${escapeHtml(noteName(note.path))}</span>${folder ? `<span class="search-path">${escapeHtml(folder)}</span>` : ""}`;
+      attachFileOpenHandlers(btn, note.path);
+      els.fileList.appendChild(btn);
+    }
     return;
   }
 
-  for (const note of notes) {
-    const btn = document.createElement("button");
-    btn.className = `file-item ${state.current === note.path ? "active" : ""}`;
-    const base = noteName(note.path);
-    btn.innerHTML = `<div>${escapeHtml(base)}</div><div class="file-path">${escapeHtml(note.path)}</div>`;
-    btn.onclick = () => openNote(note.path);
-    els.fileList.appendChild(btn);
+  if (!state.notes.length) {
+    els.fileList.innerHTML = `<p class="muted small" style="padding:8px">Markdown-файлы не найдены.</p>`;
+    return;
   }
+
+  const tree = buildFileTree(state.notes);
+  if (!state.expandedFolders.size) {
+    for (const [name] of tree.folders) state.expandedFolders.add(name);
+  }
+
+  const renderNode = (node, container, level = 0) => {
+    for (const [name, folder] of Array.from(node.folders.entries()).sort((a,b) => a[0].localeCompare(b[0], "ru"))) {
+      const open = state.expandedFolders.has(folder.path);
+      const row = document.createElement("button");
+      row.className = `folder-row ${open ? "open" : ""}`;
+      row.style.paddingLeft = `${6 + level * 13}px`;
+      row.innerHTML = `<span class="folder-chevron">›</span><span class="folder-name">${escapeHtml(name)}</span>`;
+      const children = document.createElement("div");
+      children.className = `folder-children ${open ? "open" : ""}`;
+      row.onclick = () => {
+        if (state.expandedFolders.has(folder.path)) state.expandedFolders.delete(folder.path);
+        else state.expandedFolders.add(folder.path);
+        row.classList.toggle("open");
+        children.classList.toggle("open");
+      };
+      container.appendChild(row);
+      container.appendChild(children);
+      renderNode(folder, children, level + 1);
+    }
+
+    for (const note of node.files.sort((a,b) => a.filename.localeCompare(b.filename, "ru"))) {
+      const btn = document.createElement("button");
+      btn.className = `file-item ${state.current === note.path ? "active" : ""}`;
+      btn.style.paddingLeft = `${18 + level * 13}px`;
+      btn.innerHTML = `<span class="file-icon">◇</span><span class="file-name">${escapeHtml(noteName(note.path))}</span>`;
+      attachFileOpenHandlers(btn, note.path);
+      container.appendChild(btn);
+    }
+  };
+  renderNode(tree, els.fileList, 0);
 }
 
 async function getFile(path) {
@@ -165,6 +338,7 @@ async function openNote(path) {
     state.current = path;
     state.currentSha = item.sha;
     els.pathInput.value = path;
+    updateActiveNoteTitle(path);
     setEditorMarkdown(item.text);
     els.emptyState.classList.add("hidden");
     els.editorView.classList.remove("hidden");
@@ -172,6 +346,7 @@ async function openNote(path) {
     renderFileList(els.searchInput.value);
     await Promise.all([renderBacklinks(path), renderOutgoing(item.text)]);
     els.sidebar.classList.remove("open");
+    setSyncStatus("Готово");
   } catch (e) {
     showToast(`Ошибка: ${e.message}`);
   }
@@ -401,6 +576,7 @@ function initLiveEditor() {
           const value = update.state.doc.toString();
           els.editorText.value = value;
           renderOutgoing(value);
+          updateDocumentStatus(value);
         }
         if (update.docChanged || update.selectionSet || update.viewportChanged) updateWikiSuggestions();
       }),
@@ -418,6 +594,145 @@ function getEditorMarkdown() {
   return state.editorView.state.doc.toString();
 }
 
+function initSecondaryLiveEditor() {
+  if (state.secondary.editorView) return state.secondary.editorView;
+  state.secondary.editorView = new EditorView({
+    doc: "",
+    parent: els.secondaryLiveEditorHost,
+    extensions: [
+      history(), drawSelection(), highlightActiveLine(), markdown(), EditorView.lineWrapping,
+      livePreviewDecorations,
+      keymap.of([...markdownKeymap, ...defaultKeymap, ...historyKeymap]),
+      EditorView.updateListener.of(update => {
+        if (state.secondary.syncing) return;
+        if (update.docChanged) els.secondaryEditorText.value = update.state.doc.toString();
+      }),
+      EditorView.domEventHandlers({
+        keydown(event) { return handleSecondaryKeydown(event); },
+      }),
+    ],
+  });
+  return state.secondary.editorView;
+}
+
+function setSecondaryLiveDoc(text, cursor = 0) {
+  const view = initSecondaryLiveEditor();
+  state.secondary.syncing = true;
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: text },
+    selection: { anchor: Math.max(0, Math.min(cursor, text.length)) },
+  });
+  state.secondary.syncing = false;
+}
+
+function setSecondaryMarkdown(text) {
+  els.secondaryEditorText.value = text;
+  setSecondaryLiveDoc(text, 0);
+}
+
+function getSecondaryMarkdown() {
+  if (state.secondary.mode === "raw" || !state.secondary.editorView) return els.secondaryEditorText.value;
+  return state.secondary.editorView.state.doc.toString();
+}
+
+function showSecondaryPreview() {
+  if (state.secondary.mode === "raw") setSecondaryLiveDoc(els.secondaryEditorText.value, els.secondaryEditorText.selectionStart || 0);
+  state.secondary.mode = "live";
+  els.secondaryLiveEditorHost.classList.remove("hidden");
+  els.secondaryEditorText.classList.add("hidden");
+  els.secondaryPreviewBtn.classList.add("active");
+  els.secondaryEditBtn.classList.remove("active");
+  initSecondaryLiveEditor();
+}
+
+function showSecondaryEditor() {
+  els.secondaryEditorText.value = state.secondary.editorView ? state.secondary.editorView.state.doc.toString() : els.secondaryEditorText.value;
+  state.secondary.mode = "raw";
+  els.secondaryLiveEditorHost.classList.add("hidden");
+  els.secondaryEditorText.classList.remove("hidden");
+  els.secondaryEditBtn.classList.add("active");
+  els.secondaryPreviewBtn.classList.remove("active");
+}
+
+async function openInSplit(path, orientation = "vertical") {
+  setMode("notes");
+  try {
+    const item = await getFile(path);
+    state.secondary.path = path;
+    state.secondary.sha = item.sha;
+    els.secondaryPathInput.value = path;
+    els.secondaryNoteTitle.textContent = noteName(path);
+    setSecondaryMarkdown(item.text);
+    setSplitOrientation(orientation);
+    showSecondaryPreview();
+    els.sidebar.classList.remove("open");
+    setTimeout(() => state.secondary.editorView?.focus(), 0);
+  } catch (e) {
+    showToast(`Не удалось открыть вторую область: ${e.message}`);
+  }
+}
+
+function secondarySelection() {
+  if (state.secondary.mode === "live" && state.secondary.editorView) {
+    const sel = state.secondary.editorView.state.selection.main;
+    return { text: state.secondary.editorView.state.doc.toString(), start: sel.from, end: sel.to, cursor: sel.head };
+  }
+  return { text: els.secondaryEditorText.value, start: els.secondaryEditorText.selectionStart, end: els.secondaryEditorText.selectionEnd, cursor: els.secondaryEditorText.selectionStart };
+}
+
+function replaceSecondaryRange(from, to, insert, cursor = from + insert.length, selectFrom = null, selectTo = null) {
+  if (state.secondary.mode === "live" && state.secondary.editorView) {
+    const selection = selectFrom == null ? { anchor: cursor } : { anchor: selectFrom, head: selectTo };
+    state.secondary.editorView.dispatch({ changes: { from, to, insert }, selection, scrollIntoView: true });
+    state.secondary.editorView.focus();
+  } else {
+    els.secondaryEditorText.setRangeText(insert, from, to, "start");
+    if (selectFrom == null) els.secondaryEditorText.setSelectionRange(cursor, cursor);
+    else els.secondaryEditorText.setSelectionRange(selectFrom, selectTo);
+    els.secondaryEditorText.focus();
+  }
+}
+
+function secondaryReplaceSelection(before, after = before, placeholder = "текст") {
+  const sel = secondarySelection();
+  const selected = sel.text.slice(sel.start, sel.end) || placeholder;
+  const insert = `${before}${selected}${after}`;
+  const selectedFrom = sel.start + before.length;
+  const selectedTo = selectedFrom + selected.length;
+  replaceSecondaryRange(sel.start, sel.end, insert, selectedTo, selectedFrom, selectedTo);
+}
+
+function secondaryPrefixLines(prefixer) {
+  const sel = secondarySelection();
+  const text = sel.text;
+  const lineStart = text.lastIndexOf("\n", Math.max(0, sel.start - 1)) + 1;
+  let lineEnd = text.indexOf("\n", sel.end);
+  if (lineEnd === -1) lineEnd = text.length;
+  const block = text.slice(lineStart, lineEnd);
+  const lines = block.split("\n").map((line, i) => `${prefixer(i)}${line}`).join("\n");
+  replaceSecondaryRange(lineStart, lineEnd, lines, lineStart + lines.length, lineStart, lineStart + lines.length);
+}
+
+function secondaryToolbarAction(action) {
+  if (action === "undo") { if (state.secondary.mode === "live" && state.secondary.editorView) return undo(state.secondary.editorView); document.execCommand("undo"); return; }
+  if (action === "redo") { if (state.secondary.mode === "live" && state.secondary.editorView) return redo(state.secondary.editorView); document.execCommand("redo"); return; }
+  if (action === "bold") return secondaryReplaceSelection("**", "**", "жирный текст");
+  if (action === "italic") return secondaryReplaceSelection("*", "*", "курсив");
+  if (action === "wiki") { const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, "[[]]", sel.start + 2); return; }
+  if (action === "h1") return secondaryPrefixLines(() => "# ");
+  if (action === "h2") return secondaryPrefixLines(() => "## ");
+  if (action === "bullet") return secondaryPrefixLines(() => "- ");
+  if (action === "numbered") return secondaryPrefixLines(i => `${i + 1}. `);
+  if (action === "todo") return secondaryPrefixLines(() => "- [ ] ");
+}
+
+function handleSecondaryKeydown(e) {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") { e.preventDefault(); saveSecondary(); return true; }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b") { e.preventDefault(); secondaryToolbarAction("bold"); return true; }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "i") { e.preventDefault(); secondaryToolbarAction("italic"); return true; }
+  return false;
+}
+
 function setLiveEditorDoc(text, cursor = null) {
   const view = initLiveEditor();
   state.syncingEditor = true;
@@ -432,6 +747,7 @@ function setLiveEditorDoc(text, cursor = null) {
 function setEditorMarkdown(text) {
   els.editorText.value = text;
   setLiveEditorDoc(text, 0);
+  updateDocumentStatus(text);
 }
 
 function showPreview() {
@@ -456,47 +772,92 @@ function showEditor() {
   els.previewBtn.classList.remove("active");
 }
 
-async function saveCurrent() {
-  let path = els.pathInput.value.trim();
-  if (!path) return showToast("Укажи путь файла.");
+async function persistMarkdownFile({ path, oldPath, currentSha, markdownText }) {
+  if (!path) throw new Error("Укажи путь файла.");
   if (!path.toLowerCase().endsWith(".md")) path += ".md";
 
-  const oldPath = state.current;
+  let targetSha = (currentSha && path === oldPath) ? currentSha : null;
+  if (!targetSha) {
+    try {
+      const existing = await gh(`/repos/${encodeURIComponent(state.owner)}/${encodeURIComponent(state.repo)}/contents/${encodePath(path)}?ref=${encodeURIComponent(state.branch)}`);
+      if (existing && existing.type === "file" && existing.sha) {
+        if (oldPath !== path) {
+          const overwrite = confirm(`Файл ${path} уже существует в vault. Заменить его текущим содержимым?`);
+          if (!overwrite) throw new Error("Сохранение отменено — выбери другое имя файла.");
+        }
+        targetSha = existing.sha;
+      }
+    } catch (lookupError) {
+      const msg = String(lookupError?.message || "");
+      if (!/not found/i.test(msg)) throw lookupError;
+    }
+  }
+
   const body = {
-    message: oldPath ? `Update ${path}` : `Create ${path}`,
-    content: utf8ToBase64(getEditorMarkdown()),
+    message: targetSha ? `Update ${path}` : `Create ${path}`,
+    content: utf8ToBase64(markdownText),
     branch: state.branch,
   };
+  if (targetSha) body.sha = targetSha;
 
-  if (state.currentSha && path === oldPath) body.sha = state.currentSha;
+  const result = await gh(`/repos/${encodeURIComponent(state.owner)}/${encodeURIComponent(state.repo)}/contents/${encodePath(path)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 
-  try {
-    const result = await gh(`/repos/${encodeURIComponent(state.owner)}/${encodeURIComponent(state.repo)}/contents/${encodePath(path)}`, {
-      method: "PUT",
+  if (oldPath && path !== oldPath && currentSha) {
+    await gh(`/repos/${encodeURIComponent(state.owner)}/${encodeURIComponent(state.repo)}/contents/${encodePath(oldPath)}`, {
+      method: "DELETE",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ message: `Rename ${oldPath} to ${path}`, sha: currentSha, branch: state.branch }),
     });
+  }
+  return { path, sha: result.content.sha };
+}
 
-    if (oldPath && path !== oldPath && state.currentSha) {
-      await gh(`/repos/${encodeURIComponent(state.owner)}/${encodeURIComponent(state.repo)}/contents/${encodePath(oldPath)}`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: `Rename ${oldPath} to ${path}`,
-          sha: state.currentSha,
-          branch: state.branch,
-        }),
-      });
-    }
-
-    state.current = path;
-    state.currentSha = result.content.sha;
+async function saveCurrent() {
+  const markdownText = getEditorMarkdown();
+  try {
+    setSyncStatus("Сохранение…");
+    const saved = await persistMarkdownFile({
+      path: els.pathInput.value.trim(), oldPath: state.current, currentSha: state.currentSha, markdownText,
+    });
+    state.current = saved.path;
+    state.currentSha = saved.sha;
+    els.pathInput.value = saved.path;
+    updateActiveNoteTitle(saved.path);
+    state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
     await loadTree();
-    const markdownText = getEditorMarkdown();
-    state.contents.set(path, { text: markdownText, sha: result.content.sha });
-    await Promise.all([renderBacklinks(path), renderOutgoing(markdownText)]);
+    state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
+    await Promise.all([renderBacklinks(saved.path), renderOutgoing(markdownText)]);
+    setSyncStatus("Сохранено");
     showToast("Сохранено в GitHub.");
   } catch (e) {
+    setSyncStatus("Ошибка сохранения");
+    showToast(`Не сохранено: ${e.message}`);
+  }
+}
+
+async function saveSecondary() {
+  if (!state.secondary.path && !els.secondaryPathInput.value.trim()) return;
+  const markdownText = getSecondaryMarkdown();
+  try {
+    setSyncStatus("Сохранение второй области…");
+    const saved = await persistMarkdownFile({
+      path: els.secondaryPathInput.value.trim(), oldPath: state.secondary.path, currentSha: state.secondary.sha, markdownText,
+    });
+    state.secondary.path = saved.path;
+    state.secondary.sha = saved.sha;
+    els.secondaryPathInput.value = saved.path;
+    els.secondaryNoteTitle.textContent = noteName(saved.path);
+    state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
+    await loadTree();
+    state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
+    setSyncStatus("Сохранено");
+    showToast("Вторая область сохранена в GitHub.");
+  } catch (e) {
+    setSyncStatus("Ошибка сохранения");
     showToast(`Не сохранено: ${e.message}`);
   }
 }
@@ -505,6 +866,7 @@ function newNote(path = `notes/Новая заметка ${new Date().toISOStrin
   state.current = null;
   state.currentSha = null;
   els.pathInput.value = path.toLowerCase().endsWith(".md") ? path : `${path}.md`;
+  updateActiveNoteTitle(els.pathInput.value);
   setEditorMarkdown(`# ${noteName(els.pathInput.value)}\n\n`);
   els.emptyState.classList.add("hidden");
   els.editorView.classList.remove("hidden");
@@ -513,6 +875,7 @@ function newNote(path = `notes/Новая заметка ${new Date().toISOStrin
   setMode("notes");
   showPreview();
   els.sidebar.classList.remove("open");
+  setSyncStatus("Новая заметка");
   setTimeout(() => state.editorView?.focus(), 0);
 }
 
@@ -1047,8 +1410,18 @@ els.saveBtn.onclick = saveCurrent;
 els.newBtn.onclick = () => newNote();
 els.logoutBtn.onclick = logout;
 els.vaultImport.onchange = e => importVault(e.target.files);
-els.menuBtn.onclick = () => els.sidebar.classList.toggle("open");
-els.notesModeBtn.onclick = () => setMode("notes");
+els.menuBtn.onclick = toggleSidebar;
+els.searchRibbonBtn.onclick = () => {
+  setMode("notes");
+  if (window.matchMedia("(max-width: 980px)").matches) els.sidebar.classList.add("open");
+  else els.appView.classList.remove("sidebar-collapsed");
+  setTimeout(() => els.searchInput.focus(), 0);
+};
+els.rightPanelBtn.onclick = toggleContextSidebar;
+els.notesModeBtn.onclick = () => {
+  setMode("notes");
+  if (window.matchMedia("(max-width: 980px)").matches) els.sidebar.classList.add("open");
+};
 els.graphModeBtn.onclick = () => setMode("graph");
 els.graphRefreshBtn.onclick = () => buildGraph(true);
 els.graphFitBtn.onclick = () => fitGraph();
@@ -1058,14 +1431,64 @@ els.formatToolbar.addEventListener("click", e => {
   const btn = e.target.closest("[data-action]");
   if (btn) toolbarAction(btn.dataset.action);
 });
+els.splitBtn.onclick = () => showSplitMenu();
+els.secondaryPreviewBtn.onclick = showSecondaryPreview;
+els.secondaryEditBtn.onclick = showSecondaryEditor;
+els.secondarySaveBtn.onclick = saveSecondary;
+els.secondaryCloseBtn.onclick = closeSplit;
+els.secondaryFormatToolbar.addEventListener("click", e => {
+  const btn = e.target.closest("[data-secondary-action]");
+  if (btn) secondaryToolbarAction(btn.dataset.secondaryAction);
+});
+els.secondaryEditorText.addEventListener("keydown", handleSecondaryKeydown);
+
+els.paneSplitter.addEventListener("pointerdown", e => {
+  if (!els.paneHost.classList.contains("split-active")) return;
+  e.preventDefault();
+  els.paneSplitter.setPointerCapture?.(e.pointerId);
+  const hostRect = els.paneHost.getBoundingClientRect();
+  const vertical = state.splitOrientation === "vertical";
+  const onMove = ev => {
+    const raw = vertical ? (ev.clientX - hostRect.left) / hostRect.width : (ev.clientY - hostRect.top) / hostRect.height;
+    const ratio = Math.max(.2, Math.min(.8, raw));
+    els.primaryPane.style.flexBasis = `${ratio * 100}%`;
+    els.secondaryPane.style.flexBasis = `${(1 - ratio) * 100}%`;
+  };
+  const onUp = () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp, { once: true });
+});
 els.editorText.addEventListener("input", () => {
   if (state.editorMode !== "raw") return;
   updateWikiSuggestions();
   renderOutgoing(els.editorText.value);
+  updateDocumentStatus(els.editorText.value);
 });
 els.editorText.addEventListener("keydown", handleEditorKeydown);
 els.editorText.addEventListener("click", updateWikiSuggestions);
 els.editorText.addEventListener("blur", () => setTimeout(() => hideWikiSuggestions(), 150));
+
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") closeFloatingMenu();
+  // One-time Obsidian vault import. Intentionally hidden from the permanent UI.
+  if (e.ctrlKey && e.altKey && !e.shiftKey && e.code === "KeyI") {
+    e.preventDefault();
+    if (!els.appView.classList.contains("hidden")) {
+      showToast("Импорт Obsidian: выбери папку vault.");
+      els.vaultImport.click();
+    }
+  }
+});
+
+window.addEventListener("resize", () => {
+  if (!window.matchMedia("(max-width: 980px)").matches) {
+    els.sidebar.classList.remove("open");
+    els.contextSidebar.classList.remove("open");
+  }
+});
 
 (function restoreSession() {
   const owner = sessionStorage.getItem("pv_owner");

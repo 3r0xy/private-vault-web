@@ -10,102 +10,203 @@
 <body>
   <div id="loginView" class="screen center">
     <div class="card login-card">
+      <div class="login-mark">◈</div>
       <h1>Private Vault</h1>
-      <p class="muted">Твои заметки остаются в private GitHub repository.</p>
+      <p class="muted">Личный vault в private GitHub repository.</p>
       <label>GitHub owner<input id="ownerInput" autocomplete="username" placeholder="your-github-name" /></label>
-      <label>Repository<input id="repoInput" placeholder="my-vault" /></label>
+      <label>Repository<input id="repoInput" placeholder="my-private-vault" /></label>
       <label>Fine-grained token<input id="tokenInput" type="password" autocomplete="off" placeholder="github_pat_..." /></label>
-      <button id="connectBtn">Открыть vault</button>
+      <button id="connectBtn" class="primary-btn">Открыть vault</button>
       <p id="loginError" class="error"></p>
-      <details><summary>Зачем нужен token?</summary><p class="small">Он даёт браузеру доступ к выбранному private-репозиторию. В этой версии token хранится только в sessionStorage текущей браузерной сессии.</p></details>
+      <details><summary>Зачем нужен token?</summary><p class="small muted">Он даёт браузеру доступ к выбранному private-репозиторию. Token хранится только в sessionStorage текущей браузерной сессии.</p></details>
     </div>
   </div>
 
   <div id="appView" class="app hidden">
-    <header class="topbar">
-      <button id="menuBtn" class="icon-btn" aria-label="Меню">☰</button>
-      <strong id="vaultTitle">Private Vault</strong>
-      <div class="mode-switch" aria-label="Режим">
-        <button id="notesModeBtn" class="secondary active">Заметки</button>
-        <button id="graphModeBtn" class="secondary">Граф</button>
+    <!-- Obsidian-like ribbon -->
+    <nav class="ribbon" aria-label="Основные инструменты">
+      <div class="ribbon-top">
+        <button id="menuBtn" class="ribbon-btn" title="Показать/скрыть проводник" aria-label="Проводник">
+          <svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+        </button>
+        <button id="notesModeBtn" class="ribbon-btn active" title="Файлы" aria-label="Файлы">
+          <svg viewBox="0 0 24 24"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h4l2 2h7A1.5 1.5 0 0 1 20 7.5v10A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5z"/></svg>
+        </button>
+        <button id="searchRibbonBtn" class="ribbon-btn" title="Поиск" aria-label="Поиск">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
+        </button>
+        <button id="graphModeBtn" class="ribbon-btn" title="Граф связей" aria-label="Граф">
+          <svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="m8 7 8-1M7 9l4 7m6-8-4 8"/></svg>
+        </button>
+        <button id="newBtn" class="ribbon-btn" title="Новая заметка" aria-label="Новая заметка">
+          <svg viewBox="0 0 24 24"><path d="M5 3h10l4 4v14H5z"/><path d="M14 3v5h5M12 11v6M9 14h6"/></svg>
+        </button>
       </div>
-      <div class="top-actions">
-        <button id="newBtn">+ Заметка</button>
-        <label class="button-like">Импорт Obsidian<input id="vaultImport" type="file" webkitdirectory directory multiple hidden /></label>
-        <button id="logoutBtn" class="secondary">Выйти</button>
+      <div class="ribbon-bottom">
+        <button id="rightPanelBtn" class="ribbon-btn active" title="Панель связей" aria-label="Панель связей">
+          <svg viewBox="0 0 24 24"><path d="M4 4h16v16H4zM15 4v16"/></svg>
+        </button>
+        <button id="logoutBtn" class="ribbon-btn" title="Выйти" aria-label="Выйти">
+          <svg viewBox="0 0 24 24"><path d="M10 4H5v16h5M14 8l4 4-4 4M8 12h10"/></svg>
+        </button>
       </div>
-    </header>
+    </nav>
 
+    <!-- File explorer -->
     <aside id="sidebar" class="sidebar">
-      <div class="sidebar-head"><input id="searchInput" placeholder="Поиск заметок..." /></div>
+      <div class="sidebar-titlebar">
+        <strong id="vaultTitle">Private Vault</strong>
+        <span class="branch-dot" title="Private GitHub vault"></span>
+      </div>
+      <div class="sidebar-search">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
+        <input id="searchInput" placeholder="Поиск файлов..." />
+      </div>
+      <div class="explorer-label">ФАЙЛЫ</div>
       <div id="fileList" class="file-list"></div>
     </aside>
 
     <main class="main">
       <section id="notesWorkspace" class="workspace">
-        <section id="emptyState" class="empty-state">
-          <h2>Vault подключён</h2>
-          <p>Выбери заметку слева, создай новую или импортируй существующий Obsidian vault.</p>
-          <p class="muted small">Подсказка: начни печатать <code>[[</code>, чтобы выбрать заметку для ссылки.</p>
-        </section>
-
-        <section id="editorView" class="editor hidden">
-          <div class="editor-toolbar">
-            <input id="pathInput" class="path-input" aria-label="Путь заметки" />
-            <div class="editor-buttons">
-              <button id="previewBtn" class="secondary active">Live Preview</button>
-              <button id="editBtn" class="secondary">Markdown</button>
-              <button id="saveBtn">Сохранить</button>
+        <div id="paneHost" class="pane-host">
+          <section id="primaryPane" class="note-pane primary-pane">
+            <div class="tabbar">
+              <div class="active-tab">
+                <svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h4"/></svg>
+                <span id="activeNoteTitle">Новая вкладка</span>
+              </div>
+              <div class="tab-actions">
+                <button id="splitBtn" class="mini-btn split-btn" title="Разделить область">◫</button>
+                <button id="previewBtn" class="mini-btn active" title="Live Preview">Live</button>
+                <button id="editBtn" class="mini-btn" title="Исходный Markdown">MD</button>
+                <button id="saveBtn" class="mini-btn save-mini" title="Сохранить · Ctrl+S">Сохранить</button>
+              </div>
             </div>
-          </div>
 
-          <div id="formatToolbar" class="format-toolbar" aria-label="Форматирование">
-            <button class="tool-btn" data-action="undo" title="Отменить">↶</button>
-            <button class="tool-btn" data-action="redo" title="Повторить">↷</button>
-            <span class="tool-sep"></span>
-            <button class="tool-btn" data-action="h1" title="Заголовок 1">H1</button>
-            <button class="tool-btn" data-action="h2" title="Заголовок 2">H2</button>
-            <button class="tool-btn" data-action="bold" title="Жирный"><b>B</b></button>
-            <button class="tool-btn" data-action="italic" title="Курсив"><i>I</i></button>
-            <span class="tool-sep"></span>
-            <button class="tool-btn" data-action="wiki" title="Ссылка на заметку">[[ ]]</button>
-            <button class="tool-btn" data-action="link" title="Обычная ссылка">🔗</button>
-            <button class="tool-btn" data-action="bullet" title="Маркированный список">•</button>
-            <button class="tool-btn" data-action="numbered" title="Нумерованный список">1.</button>
-            <button class="tool-btn" data-action="todo" title="Чекбокс">☑</button>
-            <button class="tool-btn" data-action="quote" title="Цитата">❝</button>
-            <button class="tool-btn" data-action="code" title="Код">&lt;/&gt;</button>
-            <button class="tool-btn" data-action="image" title="Изображение">🖼</button>
-          </div>
+            <section id="emptyState" class="empty-state">
+              <div class="empty-glyph">◈</div>
+              <h2>Vault подключён</h2>
+              <p>Выбери заметку в проводнике или создай новую.</p>
+              <p class="muted small"><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>I</kbd> — однократный импорт Obsidian vault.</p>
+              <p class="muted small">Начни печатать <code>[[</code>, чтобы создать внутреннюю ссылку.</p>
+            </section>
 
-          <div class="editor-body">
-            <div id="liveEditorHost" class="live-editor-host" aria-label="Live Preview редактор"></div>
-            <textarea id="editorText" class="raw-editor hidden" spellcheck="true" aria-label="Исходный Markdown"></textarea>
-            <div id="wikiSuggest" class="wiki-suggest hidden" role="listbox"></div>
-          </div>
+            <section id="editorView" class="editor hidden">
+              <div class="pathbar">
+                <span class="path-label">⌁</span>
+                <input id="pathInput" class="path-input" aria-label="Путь заметки" />
+              </div>
 
-          <div class="link-panels">
-            <section class="backlinks"><h3>Обратные ссылки</h3><div id="backlinksList" class="muted">—</div></section>
-            <section class="backlinks"><h3>Исходящие ссылки</h3><div id="outgoingList" class="muted">—</div></section>
-          </div>
-        </section>
+              <div id="formatToolbar" class="format-toolbar" aria-label="Форматирование">
+                <button class="tool-btn" data-action="undo" title="Отменить">↶</button>
+                <button class="tool-btn" data-action="redo" title="Повторить">↷</button>
+                <span class="tool-sep"></span>
+                <button class="tool-btn" data-action="h1" title="Заголовок 1">H1</button>
+                <button class="tool-btn" data-action="h2" title="Заголовок 2">H2</button>
+                <button class="tool-btn" data-action="bold" title="Жирный"><b>B</b></button>
+                <button class="tool-btn" data-action="italic" title="Курсив"><i>I</i></button>
+                <span class="tool-sep"></span>
+                <button class="tool-btn wiki-tool" data-action="wiki" title="Ссылка на заметку">[[ ]]</button>
+                <button class="tool-btn" data-action="link" title="Обычная ссылка">↗</button>
+                <button class="tool-btn" data-action="bullet" title="Маркированный список">• ≡</button>
+                <button class="tool-btn" data-action="numbered" title="Нумерованный список">1.</button>
+                <button class="tool-btn" data-action="todo" title="Чекбокс">☑</button>
+                <button class="tool-btn" data-action="quote" title="Цитата">❝</button>
+                <button class="tool-btn" data-action="code" title="Код">&lt;/&gt;</button>
+                <button class="tool-btn" data-action="image" title="Изображение">▧</button>
+              </div>
+
+              <div class="editor-body">
+                <div id="liveEditorHost" class="live-editor-host" aria-label="Live Preview редактор"></div>
+                <textarea id="editorText" class="raw-editor hidden" spellcheck="true" aria-label="Исходный Markdown"></textarea>
+                <div id="wikiSuggest" class="wiki-suggest hidden" role="listbox"></div>
+              </div>
+            </section>
+          </section>
+
+          <div id="paneSplitter" class="pane-splitter hidden" role="separator" aria-label="Изменить размер областей"></div>
+
+          <section id="secondaryPane" class="note-pane secondary-pane hidden">
+            <div class="tabbar secondary-tabbar">
+              <div class="active-tab">
+                <svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h4"/></svg>
+                <span id="secondaryNoteTitle">Вторая область</span>
+              </div>
+              <div class="tab-actions">
+                <button id="secondaryPreviewBtn" class="mini-btn active" title="Live Preview">Live</button>
+                <button id="secondaryEditBtn" class="mini-btn" title="Исходный Markdown">MD</button>
+                <button id="secondarySaveBtn" class="mini-btn save-mini" title="Сохранить · Ctrl+S">Сохранить</button>
+                <button id="secondaryCloseBtn" class="mini-btn" title="Закрыть область">×</button>
+              </div>
+            </div>
+
+            <section id="secondaryEditorView" class="editor">
+              <div class="pathbar">
+                <span class="path-label">⌁</span>
+                <input id="secondaryPathInput" class="path-input" aria-label="Путь заметки во второй области" />
+              </div>
+
+              <div id="secondaryFormatToolbar" class="format-toolbar secondary-format-toolbar" aria-label="Форматирование второй области">
+                <button class="tool-btn" data-secondary-action="undo" title="Отменить">↶</button>
+                <button class="tool-btn" data-secondary-action="redo" title="Повторить">↷</button>
+                <span class="tool-sep"></span>
+                <button class="tool-btn" data-secondary-action="h1" title="Заголовок 1">H1</button>
+                <button class="tool-btn" data-secondary-action="h2" title="Заголовок 2">H2</button>
+                <button class="tool-btn" data-secondary-action="bold" title="Жирный"><b>B</b></button>
+                <button class="tool-btn" data-secondary-action="italic" title="Курсив"><i>I</i></button>
+                <span class="tool-sep"></span>
+                <button class="tool-btn wiki-tool" data-secondary-action="wiki" title="Ссылка на заметку">[[ ]]</button>
+                <button class="tool-btn" data-secondary-action="bullet" title="Маркированный список">• ≡</button>
+                <button class="tool-btn" data-secondary-action="numbered" title="Нумерованный список">1.</button>
+                <button class="tool-btn" data-secondary-action="todo" title="Чекбокс">☑</button>
+              </div>
+
+              <div class="editor-body secondary-editor-body">
+                <div id="secondaryLiveEditorHost" class="live-editor-host" aria-label="Live Preview второй области"></div>
+                <textarea id="secondaryEditorText" class="raw-editor hidden" spellcheck="true" aria-label="Исходный Markdown второй области"></textarea>
+              </div>
+            </section>
+          </section>
+        </div>
       </section>
 
       <section id="graphWorkspace" class="graph-workspace hidden">
         <div class="graph-toolbar">
-          <div><strong>Граф связей</strong><span id="graphStats" class="muted small"></span></div>
+          <div class="graph-title"><strong>Граф связей</strong><span id="graphStats" class="muted small"></span></div>
           <div class="graph-controls">
             <input id="graphSearch" placeholder="Найти заметку..." />
-            <label class="graph-toggle"><input id="showMissingToggle" type="checkbox" /> Нерешённые ссылки</label>
-            <button id="graphRefreshBtn" class="secondary">Обновить</button>
-            <button id="graphFitBtn" class="secondary">Вместить</button>
+            <label class="graph-toggle"><input id="showMissingToggle" type="checkbox" /> Нерешённые</label>
+            <button id="graphRefreshBtn" class="mini-btn">Обновить</button>
+            <button id="graphFitBtn" class="mini-btn">Вместить</button>
           </div>
         </div>
         <div id="graphLoading" class="graph-loading hidden">Строю индекс связей…</div>
         <svg id="graphSvg" class="graph-svg" aria-label="Граф заметок"></svg>
-        <div class="graph-help">Колесо/щипок — масштаб · перетаскивание фона — движение · перетащи узел · кликни узел, чтобы открыть заметку</div>
       </section>
     </main>
+
+    <!-- Context / backlinks -->
+    <aside id="contextSidebar" class="context-sidebar">
+      <div class="context-titlebar">СВЯЗИ</div>
+      <div class="context-scroll">
+        <section class="context-block">
+          <div class="context-heading">Обратные ссылки</div>
+          <div id="backlinksList" class="muted context-list">—</div>
+        </section>
+        <section class="context-block">
+          <div class="context-heading">Исходящие ссылки</div>
+          <div id="outgoingList" class="muted context-list">—</div>
+        </section>
+      </div>
+    </aside>
+
+    <footer class="statusbar">
+      <div class="status-left"><span class="status-dot"></span><span>GitHub</span><span id="branchStatus">main</span></div>
+      <div class="status-right"><span id="syncStatus">Готово</span><span id="statusWords">Слов: 0</span><span id="statusChars">Символов: 0</span></div>
+    </footer>
+
+    <!-- No visible import button: Ctrl+Alt+I -->
+    <input id="vaultImport" type="file" webkitdirectory directory multiple hidden />
     <div id="toast" class="toast hidden"></div>
   </div>
 
