@@ -714,3 +714,145 @@ button.crumb:hover { color: var(--text); background: var(--panel-3); }
     margin-right: 18px;
   }
 }
+
+
+/* v1.2 — editor interaction rebuild */
+.media-preview,
+.secondary-media-preview {
+  display: none !important;
+}
+
+/* Obsidian-style Live Preview: syntax is removed from layout only outside the active line.
+   Active line shows source markers so cursor geometry remains exact. */
+.cm-note-title-line {
+  padding-top: 10px !important;
+  padding-bottom: 6px !important;
+}
+.cm-note-title-text {
+  font-size: 1.72rem;
+  line-height: 1.25;
+  font-weight: 760;
+  letter-spacing: -0.018em;
+}
+.cm-live-heading-line {
+  padding-top: 5px !important;
+  padding-bottom: 3px !important;
+}
+.cm-live-h1 { font-size: 1.58rem !important; line-height: 1.25; }
+.cm-live-h2 { font-size: 1.34rem !important; line-height: 1.3; }
+.cm-live-h3 { font-size: 1.15rem !important; line-height: 1.35; }
+
+/* Inline links render as one clean clickable item when not being edited. */
+.cm-live-link-chip,
+.cm-wiki-chip {
+  display: inline;
+  color: var(--accent);
+  text-decoration: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.cm-live-link-chip:hover,
+.cm-wiki-chip:hover { text-decoration: underline; }
+.cm-wiki-chip.missing {
+  color: color-mix(in srgb, var(--accent) 62%, var(--muted));
+  text-decoration-style: dashed;
+}
+
+/* Task/bullet markers sit on the text baseline and no longer add a second dash. */
+.task-inline-widget {
+  width: 15px;
+  height: 15px;
+  margin: 0 7px 0 1px;
+  vertical-align: -2px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+.bullet-inline-widget {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 1em;
+  margin-right: 5px;
+  color: var(--text);
+  font-size: 17px;
+  line-height: 1;
+  vertical-align: -1px;
+}
+.cm-live-task-line,
+.cm-live-list-line {
+  padding-top: 1px !important;
+  padding-bottom: 1px !important;
+}
+
+/* Image lives at its markdown position, can be resized and dragged to another text position. */
+.cm-inline-image-widget {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  margin: 8px 5px 8px 0;
+  vertical-align: top;
+  border-radius: 7px;
+  line-height: 0;
+  cursor: grab;
+  user-select: none;
+}
+.cm-inline-image-widget:active { cursor: grabbing; }
+.cm-inline-image-widget img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2);
+}
+.cm-image-loading {
+  display: inline-block;
+  min-width: 120px;
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: .78rem;
+  line-height: 1.35;
+}
+.cm-image-loading.error { color: var(--danger); }
+.cm-image-resize-handle {
+  position: absolute;
+  width: 13px;
+  height: 13px;
+  right: 5px;
+  bottom: 5px;
+  border: 1px solid rgba(255,255,255,.72);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 1px 6px rgba(0,0,0,.28);
+  cursor: nwse-resize;
+  opacity: .28;
+  transition: opacity .12s ease;
+}
+.cm-inline-image-widget:hover .cm-image-resize-handle { opacity: 1; }
+
+/* Per-selection highlight color is stored in markdown as =={#RRGGBB}text==. */
+.cm-live-highlight {
+  border-radius: 3px;
+  padding: 0 .06em;
+}
+
+/* Tabs can be reordered; right-click opens note actions. */
+.note-tab.dragging { opacity: .45; }
+.note-tab.drop-before { box-shadow: inset 2px 0 0 var(--accent); }
+.note-tab.drop-after { box-shadow: inset -2px 0 0 var(--accent); }
+.note-tab { cursor: default; }
+.note-tab:active { cursor: grabbing; }
+
+/* Breadcrumb is folder-only, so it no longer duplicates the tab title. */
+.root-crumb {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+/* Graph no longer uses transform transitions while physics is running. */
+.graph-node,
+.graph-node circle {
+  transition: opacity .12s ease, stroke-width .12s ease !important;
+}
