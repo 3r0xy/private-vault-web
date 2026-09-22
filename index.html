@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="color-scheme" content="light dark" />
   <title>note</title>
-  <link rel="stylesheet" href="./styles.css?v=1.4" />
+  <link rel="stylesheet" href="./styles.css?v=1.5" />
 </head>
 <body>
   <div id="loginView" class="screen center">
@@ -34,6 +34,9 @@
         </button>
         <button id="searchRibbonBtn" class="ribbon-btn" title="Поиск" aria-label="Поиск">
           <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
+        </button>
+        <button id="plannerModeBtn" class="ribbon-btn" title="Планер недели" aria-label="Планер">
+          <svg viewBox="0 0 24 24"><path d="M5 4h14a1 1 0 0 1 1 1v15H4V5a1 1 0 0 1 1-1z"/><path d="M8 2v4M16 2v4M4 9h16"/><path d="M8 13h2M12 13h2M16 13h1M8 17h2M12 17h2"/></svg>
         </button>
         <button id="graphModeBtn" class="ribbon-btn" title="Граф связей" aria-label="Граф">
           <svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="m8 7 8-1M7 9l4 7m6-8-4 8"/></svg>
@@ -205,6 +208,32 @@
         </div>
       </section>
 
+      <section id="plannerWorkspace" class="planner-workspace hidden">
+        <div class="planner-toolbar">
+          <div class="planner-week-nav">
+            <button id="plannerPrevWeekBtn" class="mini-btn planner-nav-btn" title="Предыдущая неделя">‹</button>
+            <div class="planner-week-heading">
+              <strong id="plannerWeekTitle">Планер</strong>
+              <span id="plannerWeekMeta" class="muted small">—</span>
+            </div>
+            <button id="plannerNextWeekBtn" class="mini-btn planner-nav-btn" title="Следующая неделя">›</button>
+            <button id="plannerTodayBtn" class="mini-btn">Эта неделя</button>
+          </div>
+          <div class="planner-toolbar-actions">
+            <button id="plannerOpenMarkdownBtn" class="mini-btn" title="Открыть Markdown-файл недели в редакторе">Markdown</button>
+            <button id="plannerReviewBtn" class="mini-btn planner-review-btn">Итоги недели</button>
+          </div>
+        </div>
+        <div id="plannerDayStrip" class="planner-day-strip" aria-label="Дни недели"></div>
+        <div id="plannerEmpty" class="planner-empty hidden">
+          <div class="planner-empty-icon">◫</div>
+          <h2>Эта неделя ещё не создана</h2>
+          <p class="muted">Создай неделю: повторяющиеся задачи из предыдущей недели перенесутся автоматически.</p>
+          <button id="plannerCreateWeekBtn" class="primary-action">Создать неделю</button>
+        </div>
+        <div id="plannerBoard" class="planner-board" aria-label="Недельный план"></div>
+      </section>
+
       <section id="graphWorkspace" class="graph-workspace hidden">
         <div class="graph-toolbar">
           <div class="graph-title"><strong>Граф связей</strong><span id="graphStats" class="muted small"></span></div>
@@ -241,6 +270,33 @@
       <div class="status-right"><span id="syncStatus">Готово</span><span id="statusWords">Слов: 0</span><span id="statusChars">Символов: 0</span></div>
     </footer>
 
+    <div id="plannerTaskModal" class="planner-modal hidden" role="dialog" aria-modal="true" aria-labelledby="plannerTaskModalTitle">
+      <div class="planner-dialog planner-task-dialog">
+        <div class="planner-dialog-head">
+          <strong id="plannerTaskModalTitle">Задача</strong>
+          <button id="plannerTaskCloseBtn" class="icon-mini" aria-label="Закрыть">×</button>
+        </div>
+        <label class="planner-field planner-field-wide"><span>Задача</span><textarea id="plannerTaskText" rows="3" placeholder="Например: Подготовить [[Лекция по GLSL]]"></textarea></label>
+        <div class="planner-form-grid">
+          <label class="planner-field"><span>День</span><select id="plannerTaskDay"></select></label>
+          <label class="planner-field"><span>Раздел</span><select id="plannerTaskSection"><option value="meetings">Встречи и лекции</option><option value="general">Общее</option><option value="health">Здоровье и активность</option></select></label>
+          <label class="planner-field"><span>Начало</span><input id="plannerTaskTime" type="time" /></label>
+          <label class="planner-field"><span>Длительность, мин</span><input id="plannerTaskDuration" type="number" min="0" step="5" placeholder="необязательно" /></label>
+          <label class="planner-field planner-field-wide"><span>Повтор</span><select id="plannerTaskRepeat"><option value="none">Не повторять</option><option value="daily">Каждый день</option><option value="weekly">Каждую неделю</option></select></label>
+        </div>
+        <div class="planner-link-helper"><select id="plannerLinkSelect"><option value="">Ссылка на заметку…</option></select><button id="plannerInsertLinkBtn" class="mini-btn">Вставить [[ссылку]]</button></div>
+        <div class="planner-dialog-actions"><button id="plannerDeleteTaskBtn" class="mini-btn danger-text hidden">Удалить</button><span class="planner-dialog-spacer"></span><button id="plannerTaskCancelBtn" class="mini-btn">Отмена</button><button id="plannerTaskSaveBtn" class="primary-action">Сохранить</button></div>
+      </div>
+    </div>
+
+    <div id="plannerReviewModal" class="planner-modal hidden" role="dialog" aria-modal="true" aria-labelledby="plannerReviewTitle">
+      <div class="planner-dialog planner-review-dialog">
+        <div class="planner-dialog-head"><div><strong id="plannerReviewTitle">Итоги недели</strong><div id="plannerReviewSubtitle" class="muted small"></div></div><button id="plannerReviewCloseBtn" class="icon-mini" aria-label="Закрыть">×</button></div>
+        <div id="plannerReviewContent" class="planner-review-content"></div>
+        <div class="planner-dialog-actions"><button id="plannerReviewCloseOnlyBtn" class="mini-btn">Закрыть</button><span class="planner-dialog-spacer"></span><button id="plannerFinalizeWeekBtn" class="primary-action">Сохранить итоги и подготовить следующую неделю</button></div>
+      </div>
+    </div>
+
     <!-- No visible import button: Ctrl+Alt+I -->
     <input id="vaultImport" type="file" webkitdirectory directory multiple hidden />
     <input id="imageInput" type="file" accept="image/*" hidden />
@@ -250,6 +306,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
-  <script type="module" src="./app-v1.4.js"></script>
+  <script type="module" src="./app-v1.5.js"></script>
 </body>
 </html>
