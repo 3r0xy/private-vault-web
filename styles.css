@@ -1,3 +1,7 @@
+/* note v1.5 — стили редактора и недельного Планера.
+   CSS разделён комментариями, чтобы безопаснее менять отдельные части UI. */
+
+/* ---------- Основная тема и размеры интерфейса ---------- */
 :root {
   --bg: #f7f7f8;
   --panel: #efeff1;
@@ -883,6 +887,7 @@ button.crumb:hover { color: var(--text); background: var(--panel-3); }
 
 
 /* Planner */
+/* ---------- Стили Планера ---------- */
 .planner-workspace{height:100%;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
 .planner-toolbar{min-height:48px;padding:6px 10px;border-bottom:1px solid var(--line);background:var(--panel);display:flex;align-items:center;justify-content:space-between;gap:10px}
 .planner-week-nav,.planner-toolbar-actions{display:flex;align-items:center;gap:6px}.planner-week-heading{min-width:190px;display:flex;flex-direction:column;gap:1px}.planner-week-heading strong{font-size:.9rem}.planner-nav-btn{font-size:1.1rem;min-width:30px}
