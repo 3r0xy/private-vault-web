@@ -1,7 +1,7 @@
 {
   "id": "./",
-  "name": "note",
-  "short_name": "note",
+  "name": "luna",
+  "short_name": "luna",
   "description": "Личный ежедневник и проекты",
   "lang": "ru",
   "start_url": "./",

@@ -4,24 +4,24 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="color-scheme" content="light dark" />
-  <title>note</title>
-  <link rel="stylesheet" href="./styles.css?v=1.7" />
+  <title>luna</title>
+  <link rel="stylesheet" href="./styles.css?v=luna-1" />
   <link rel="icon" href="./favicon.ico?v=moon-cat-1" sizes="any" />
   <link rel="icon" type="image/png" sizes="192x192" href="./icons/note-cat-192.png" />
   <link rel="apple-touch-icon" href="./icons/note-cat-192.png" />
-  <link rel="manifest" href="./manifest.webmanifest?v=moon-cat-1" />
+  <link rel="manifest" href="./manifest.webmanifest?v=luna-1" />
 </head>
 <body>
   <!-- note v1.5: основной интерфейс. Планер встроен в тот же workspace, что редактор и граф. -->
   <div id="loginView" class="screen center">
     <div class="card login-card">
-      <div class="login-mark">◈</div>
-      <h1>note</h1>
-      <p class="muted">Личный vault в private GitHub repository.</p>
+      <div class="login-mark"><img src="./icons/note-cat-192.png" alt="" width="72" height="72" /></div>
+      <h1>luna</h1>
+      <p class="muted">Твой ежедневник, заметки и проекты.</p>
       <label>GitHub owner<input id="ownerInput" autocomplete="username" placeholder="your-github-name" /></label>
-      <label>Repository<input id="repoInput" placeholder="note-vault" /></label>
+      <label>Repository<input id="repoInput" placeholder="my-vault" /></label>
       <label>Fine-grained token<input id="tokenInput" type="password" autocomplete="off" placeholder="github_pat_..." /></label>
-      <button id="connectBtn" class="primary-btn">Открыть vault</button>
+      <button id="connectBtn" class="primary-btn">Открыть luna</button>
       <p id="loginError" class="error"></p>
       <details><summary>Зачем нужен token?</summary><p class="small muted">Он даёт браузеру доступ к выбранному private-репозиторию. Token хранится только в sessionStorage текущей браузерной сессии.</p></details>
     </div>
@@ -66,7 +66,7 @@
     <!-- File explorer -->
     <aside id="sidebar" class="sidebar">
       <div class="sidebar-titlebar">
-        <strong id="vaultTitle">note</strong>
+        <strong id="vaultTitle">luna</strong>
         <div class="explorer-actions">
           <button id="newNoteSidebarBtn" class="icon-mini" title="Новая заметка · Ctrl+N" aria-label="Новая заметка">＋</button>
           <button id="newFolderBtn" class="icon-mini" title="Новая папка · Ctrl+Shift+N" aria-label="Новая папка">⌑＋</button>
@@ -100,8 +100,8 @@
             </div>
 
             <section id="emptyState" class="empty-state">
-              <div class="empty-glyph">◈</div>
-              <h2>Vault подключён</h2>
+              <div class="empty-glyph"><img src="./icons/note-cat-192.png" alt="" width="88" height="88" /></div>
+              <h2>luna</h2>
               <p>Выбери заметку в проводнике или создай новую.</p>
               <p class="muted small"><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>I</kbd> — однократный импорт Obsidian vault.</p>
               <p class="muted small">Начни печатать <code>[[</code>, чтобы создать внутреннюю ссылку.</p>
@@ -355,7 +355,7 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
-  <script type="module" src="./app-v1.7.js?v=1.7.1"></script>
+  <script type="module" src="./app-v1.7.js?v=luna-1"></script>
 </body>
 </html>
 
