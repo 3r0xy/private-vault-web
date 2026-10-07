@@ -10,8 +10,10 @@
   --text: #242426;
   --muted: #77777f;
   --line: #d8d8dc;
-  --accent: #7c5cff;
-  --accent-strong: #6d4df0;
+  --accent: #a33f67;
+  --accent-strong: #f5bdd0;
+  --on-accent: #ffffff;
+  --on-accent-strong: #2b1820;
   --danger: #c43838;
   --soft-accent: color-mix(in srgb, var(--accent) 13%, transparent);
   --sidebar: 270px;
@@ -29,8 +31,9 @@
     --text: #dcddde;
     --muted: #8d8d91;
     --line: #343438;
-    --accent: #a68cff;
-    --accent-strong: #8f73ff;
+    --accent: #f5bdd0;
+    --on-accent: #2b1820;
+    --accent-strong: #f5bdd0;
     --danger: #ff6b6b;
     --soft-accent: color-mix(in srgb, var(--accent) 15%, transparent);
   }
@@ -64,7 +67,7 @@ kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5p
 .login-card label { display: block; margin: 15px 0; font-size: .88rem; color: var(--muted); }
 .login-card input { margin-top: 6px; width: 100%; padding: 10px 11px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); outline: none; }
 .login-card input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--soft-accent); }
-.primary-btn { width: 100%; border: 0; border-radius: 7px; padding: 10px 14px; background: var(--accent-strong); color: white; }
+.primary-btn { width: 100%; border: 0; border-radius: 7px; padding: 10px 14px; background: var(--accent-strong); color: var(--on-accent-strong); }
 .login-card details { margin-top: 12px; }
 .login-card summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
 
@@ -227,7 +230,7 @@ kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5p
 .graph-svg:active { cursor: grabbing; }
 .graph-loading { position: absolute; z-index: 20; top: 60px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px; padding: 8px 12px; box-shadow: 0 8px 25px rgba(0,0,0,.2); }
 .graph-link { stroke: var(--muted); stroke-opacity: .28; }
-.graph-node circle { fill: var(--accent); stroke: var(--panel-2); stroke-width: 1.4px; }
+.graph-node circle { fill: var(--accent-strong); stroke: var(--panel-2); stroke-width: 1.4px; }
 .graph-node.missing circle { fill: var(--panel-2); stroke: var(--muted); stroke-dasharray: 3 3; }
 .graph-node text { fill: var(--text); font-size: 11px; pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round; }
 .graph-node.dim { opacity: .14; }
@@ -380,7 +383,7 @@ button.crumb:hover { color: var(--text); background: var(--panel-3); }
 .note-pane.pane-active::after { content: ""; position: absolute; z-index: 25; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent); }
 .task-checkbox-widget {
   width: 15px; height: 15px; margin: 0 5px 0 1px; padding: 0; vertical-align: -2px;
-  border: 1.5px solid color-mix(in srgb, var(--muted) 75%, transparent); border-radius: 2px; background: transparent; color: white; cursor: pointer;
+  border: 1.5px solid color-mix(in srgb, var(--muted) 75%, transparent); border-radius: 2px; background: transparent; color: var(--on-accent); cursor: pointer;
   display: inline-grid; place-items: center; font-size: 11px; font-weight: 800; line-height: 1;
 }
 .task-checkbox-widget.checked { background: var(--accent); border-color: var(--accent); }
@@ -479,7 +482,7 @@ button.crumb:hover { color: var(--text); background: var(--panel-3); }
   vertical-align: -2px; position: relative;
 }
 .task-checkbox-widget:checked { background: var(--accent); border-color: var(--accent); }
-.task-checkbox-widget:checked::after { content: "✓"; position: absolute; inset: -2px 0 0 1px; color: white; font-size: 11px; font-weight: 800; line-height: 15px; }
+.task-checkbox-widget:checked::after { content: "✓"; position: absolute; inset: -2px 0 0 1px; color: var(--on-accent); font-size: 11px; font-weight: 800; line-height: 15px; }
 .cm-live-task-line { padding-left: 0 !important; }
 
 /* Code blocks stay editable instead of becoming one blocking widget. */
@@ -570,7 +573,7 @@ button.crumb:hover { color: var(--text); background: var(--panel-3); }
 }
 .cm-task-marker.checked::after {
   content: "✓";
-  color: white;
+  color: var(--on-accent);
   font-size: 11px;
   font-weight: 800;
   line-height: 1;
@@ -631,7 +634,7 @@ button.crumb:hover { color: var(--text); background: var(--panel-3); }
 }
 .task-inline-widget.checked::after {
   content: "✓";
-  color: white;
+  color: var(--on-accent);
   font-size: 11px;
   font-weight: 800;
   line-height: 1;
@@ -897,7 +900,7 @@ button.crumb:hover { color: var(--text); background: var(--panel-3); }
 .planner-day-tab:hover{background:var(--panel-3);color:var(--text)}.planner-day-tab.active{background:var(--soft-accent);color:var(--accent);border-color:color-mix(in srgb,var(--accent) 25%,transparent)}.planner-day-tab.today{box-shadow:inset 0 -2px 0 var(--accent)}
 .planner-day-tab strong{display:block;font-size:.77rem}.planner-day-tab span{font-size:.68rem}
 .planner-empty{flex:1;display:grid;place-content:center;text-align:center;padding:40px}.planner-empty h2{margin:8px 0 6px;font-size:20px}.planner-empty p{margin:0 0 16px;max-width:560px}.planner-empty-icon{font-size:34px;color:var(--accent)}
-.primary-action{border:0;border-radius:6px;background:var(--accent-strong);color:white;padding:7px 12px;font:inherit}.primary-action:hover{filter:brightness(1.06)}
+.primary-action{border:0;border-radius:6px;background:var(--accent-strong);color:var(--on-accent-strong);padding:7px 12px;font:inherit}.primary-action:hover{filter:brightness(1.06)}
 .planner-board{flex:1;min-height:0;display:flex;gap:8px;overflow:auto;padding:9px;align-items:stretch;scrollbar-width:thin;scroll-snap-type:x proximity}
 .planner-day-card{flex:0 0 286px;min-width:286px;min-height:100%;border:1px solid var(--line);border-radius:9px;background:var(--panel-2);display:flex;flex-direction:column;overflow:hidden;scroll-snap-align:start}.planner-day-card.today{border-color:color-mix(in srgb,var(--accent) 40%,var(--line))}
 .planner-day-head{padding:9px 10px 8px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px}.planner-day-head strong{font-size:.88rem}.planner-day-date{color:var(--muted);font-size:.72rem}.planner-day-progress{color:var(--muted);font-size:.68rem;white-space:nowrap}
