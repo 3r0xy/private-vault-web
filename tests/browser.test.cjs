@@ -22,7 +22,7 @@ const server=http.createServer((req,res)=>{
   const target=path.resolve(root,name);
   if (!target.startsWith(root+path.sep) || !fs.existsSync(target)) {res.writeHead(404);return res.end();}
   let body=fs.readFileSync(target);
-  if(name==='app-v1.7.js') body=Buffer.from(body.toString()+`\nwindow.__test={state,els,relocateFolder,plannerOpenWeek,plannerFlush,plannerFinalizeWeek,plannerParse,plannerSerialize,taskHub,buildGraph};`);
+  if(name==='app.js') body=Buffer.from(body.toString()+`\nwindow.__test={state,els,relocateFolder,plannerOpenWeek,plannerFlush,plannerFinalizeWeek,plannerParse,plannerSerialize,taskHub,buildGraph};`);
   res.setHeader('Content-Type',name.endsWith('.html')?'text/html; charset=utf-8':name.endsWith('.css')?'text/css':/\.(mjs|js)$/.test(name)?'text/javascript':'application/octet-stream');res.end(body);
 });
 async function api(route){

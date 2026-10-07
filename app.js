@@ -1,7 +1,24 @@
+import { resolveNote, noteLinks, folderMoveEntries, mergeWeekTasks, rewriteFolderLinks } from "./domain.mjs";
+import { createTaskHub } from "./task-hub.mjs";
+/*
+ * note v1.5 — финальная версия с недельным Планером.
+ *
+ * Архитектура:
+ * - GitHub API хранит заметки и planner/*.md в приватном vault.
+ * - CodeMirror отвечает за Live Preview/Markdown-редактор.
+ * - Планер является представлением Markdown, а не отдельной базой данных.
+ * - Данные авторизации не зашиты в исходники: токен вводится пользователем.
+ *
+ * Основные блоки файла помечены комментариями ниже, чтобы будущие правки
+ * было проще вносить без нарушения уже работающих функций.
+ */
+
 import { EditorView, Decoration, WidgetType, ViewPlugin, keymap, drawSelection } from "https://esm.sh/@codemirror/view@6.43.12?deps=@codemirror/state@6.7.5";
 import { history, historyKeymap, defaultKeymap, undo, redo } from "https://esm.sh/@codemirror/commands@6.11.1?deps=@codemirror/state@6.7.5,@codemirror/view@6.43.12";
 import { markdown, markdownKeymap } from "https://esm.sh/@codemirror/lang-markdown@6.5.2?deps=@codemirror/state@6.7.5,@codemirror/view@6.43.12";
+console.info("note v1.5 planner loaded");
 
+// ---------- GitHub / глобальное состояние приложения ----------
 const API = "https://api.github.com";
 const state = {
   token: "",
@@ -17,7 +34,7 @@ const state = {
   wikiSuggestions: [],
   wikiSelected: 0,
   wikiRange: null,
-  graph: { nodes: [], links: [], simulation: null, zoom: null, svg: null, ambientFrame: null, nodeSelection: null, linkSelection: null },
+  graph: { nodes: [], links: [], simulation: null, zoom: null, svg: null, ambientFrame: null, nodeSelection: null, linkSelection: null, positions: new Map() },
   editorMode: "live",
   editorView: null,
   syncingEditor: false,
@@ -33,6 +50,24 @@ const state = {
   imageTargetPane: "primary",
   imageInsertContext: null,
   mediaUrls: new Map(),
+  highlightTargetPane: "primary",
+  highlightInsertContext: null,
+  dragTabId: null,
+  dragImage: null,
+  folderColors: {},
+  folderColorTarget: null,
+  planner: {
+    weekStart: null,
+    path: null,
+    sha: null,
+    data: null,
+    selectedDay: 0,
+    editTaskId: null,
+    saveTimer: null,
+    saving: false,
+    dirty: false,
+    pendingSave: false,
+  },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -52,7 +87,7 @@ const els = {
   graphSearch: $("graphSearch"), showMissingToggle: $("showMissingToggle"),
   tabStrip: $("tabStrip"), searchRibbonBtn: $("searchRibbonBtn"), rightPanelBtn: $("rightPanelBtn"),
   contextSidebar: $("contextSidebar"), branchStatus: $("branchStatus"), syncStatus: $("syncStatus"),
-  statusWords: $("statusWords"), statusChars: $("statusChars"),
+  statusWords: $("statusWords"), statusChars: $("statusChars"), vaultStorage: $("vaultStorage"),
   paneHost: $("paneHost"), primaryPane: $("primaryPane"), secondaryPane: $("secondaryPane"), paneSplitter: $("paneSplitter"), splitBtn: $("splitBtn"),
   secondaryNoteTitle: $("secondaryNoteTitle"), secondaryPathInput: $("secondaryPathInput"), secondaryLiveEditorHost: $("secondaryLiveEditorHost"),
   secondaryEditorText: $("secondaryEditorText"), secondaryPreviewBtn: $("secondaryPreviewBtn"), secondaryEditBtn: $("secondaryEditBtn"),
@@ -60,9 +95,29 @@ const els = {
   newTabBtn: $("newTabBtn"), newNoteSidebarBtn: $("newNoteSidebarBtn"), newFolderBtn: $("newFolderBtn"),
   pathBreadcrumb: $("pathBreadcrumb"), editPathBtn: $("editPathBtn"), secondaryPathBreadcrumb: $("secondaryPathBreadcrumb"), secondaryEditPathBtn: $("secondaryEditPathBtn"),
   leftSidebarResizer: $("leftSidebarResizer"), rightSidebarResizer: $("rightSidebarResizer"),
-  imageInput: $("imageInput"),
+  imageInput: $("imageInput"), highlightColorInput: $("highlightColorInput"), folderColorInput: $("folderColorInput"), mediaPreview: $("mediaPreview"), secondaryMediaPreview: $("secondaryMediaPreview"),
+  plannerWorkspace: $("plannerWorkspace"), plannerModeBtn: $("plannerModeBtn"),
+  plannerPrevWeekBtn: $("plannerPrevWeekBtn"), plannerNextWeekBtn: $("plannerNextWeekBtn"), plannerTodayBtn: $("plannerTodayBtn"),
+  plannerWeekTitle: $("plannerWeekTitle"), plannerWeekMeta: $("plannerWeekMeta"), plannerDayStrip: $("plannerDayStrip"),
+  plannerBoard: $("plannerBoard"), plannerEmpty: $("plannerEmpty"), plannerCreateWeekBtn: $("plannerCreateWeekBtn"),
+  plannerReviewBtn: $("plannerReviewBtn"), plannerOpenMarkdownBtn: $("plannerOpenMarkdownBtn"),
+  plannerTaskModal: $("plannerTaskModal"), plannerTaskModalTitle: $("plannerTaskModalTitle"), plannerTaskText: $("plannerTaskText"),
+  plannerTaskDay: $("plannerTaskDay"), plannerTaskSection: $("plannerTaskSection"), plannerTaskTime: $("plannerTaskTime"),
+  plannerTaskDuration: $("plannerTaskDuration"), plannerTaskRepeat: $("plannerTaskRepeat"), plannerLinkSelect: $("plannerLinkSelect"),
+  plannerInsertLinkBtn: $("plannerInsertLinkBtn"), plannerDeleteTaskBtn: $("plannerDeleteTaskBtn"),
+  plannerTaskSaveBtn: $("plannerTaskSaveBtn"), plannerTaskCancelBtn: $("plannerTaskCancelBtn"), plannerTaskCloseBtn: $("plannerTaskCloseBtn"),
+  plannerReviewModal: $("plannerReviewModal"), plannerReviewTitle: $("plannerReviewTitle"), plannerReviewSubtitle: $("plannerReviewSubtitle"),
+  plannerReviewContent: $("plannerReviewContent"), plannerReviewCloseBtn: $("plannerReviewCloseBtn"), plannerReviewCloseOnlyBtn: $("plannerReviewCloseOnlyBtn"),
+  plannerFinalizeWeekBtn: $("plannerFinalizeWeekBtn"),
 };
 
+try {
+  const savedHighlight = localStorage.getItem("pv_highlight_color") || "#ffd84d";
+  document.documentElement.style.setProperty("--note-highlight", savedHighlight);
+  if (els.highlightColorInput) els.highlightColorInput.value = savedHighlight;
+} catch {}
+
+// ---------- GitHub API и базовые утилиты ----------
 function headers(extra = {}) {
   return {
     "Accept": "application/vnd.github+json",
@@ -73,10 +128,13 @@ function headers(extra = {}) {
 }
 
 async function gh(path, options = {}) {
+  options = { cache: "no-store", ...options };
   const res = await fetch(`${API}${path}`, { ...options, headers: headers(options.headers || {}) });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.message || `${res.status} ${res.statusText}`);
+    const error = new Error(data.message || `${res.status} ${res.statusText}`);
+    error.status = res.status;
+    throw error;
   }
   return res.status === 204 ? null : res.json();
 }
@@ -105,6 +163,29 @@ function showToast(text) {
   showToast.timer = setTimeout(() => els.toast.classList.add("hidden"), 2400);
 }
 
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let n = value / 1024;
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  const digits = n >= 100 ? 0 : n >= 10 ? 1 : 2;
+  return `${n.toFixed(digits)} ${units[i]}`;
+}
+
+function updateVaultStorage(treeTruncated = false) {
+  if (!els.vaultStorage) return;
+  const bytes = state.files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+  const recommendedBytes = 10 * 1024 * 1024 * 1024;
+  const pct = Math.min(999, (bytes / recommendedBytes) * 100);
+  els.vaultStorage.textContent = `Vault: ${treeTruncated ? "> " : ""}${formatBytes(bytes)} / 10 GB`;
+  els.vaultStorage.title = `Примерный размер текущих файлов: ${formatBytes(bytes)} (${pct.toFixed(pct < 10 ? 1 : 0)}% от рекомендованных 10 ГБ). Это ориентир GitHub для размера репозитория, а не квота тарифа. История Git может занимать дополнительное место.${treeTruncated ? " GitHub вернул усечённое дерево, поэтому фактический размер больше." : ""}`;
+  els.vaultStorage.classList.toggle("storage-warn", pct >= 70);
+  els.vaultStorage.classList.toggle("storage-danger", pct >= 90);
+}
+
+// ---------- Вкладки и рабочее пространство редактора ----------
 function tabsStorageKey() {
   return `pv_tabs:${state.owner}/${state.repo}`;
 }
@@ -134,12 +215,109 @@ function syncActiveTabText(text = null) {
   const dot = el?.querySelector(".tab-dirty");
   if (tab.dirty && !dot) { const d=document.createElement("span"); d.className="tab-dirty"; d.textContent="●"; el?.insertBefore(d, el.querySelector(".tab-close")); }
   if (!tab.dirty && dot) dot.remove();
+  updateTabLabel(tab);
 }
 
 function captureActiveTab() {
+  if (state.mode !== "notes" || activeTab()?.unloaded) return;
   const tab = activeTab();
   if (!tab) return;
   try { syncActiveTabText(); } catch {}
+}
+
+
+function firstLineTitle(text = "") {
+  const raw = String(text || "").split(/\r?\n/, 1)[0].trim();
+  if (!raw) return "";
+  return raw
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/^>\s+/, "")
+    .replace(/^[-*+]\s+(?:\[[ xX]\]\s+)?/, "")
+    .replace(/^\d+[.)]\s+/, "")
+    .replace(/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g, (_, target, alias) => alias || target)
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/==(?:\{#[0-9a-fA-F]{6}\})?(.+?)==/g, "$1")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/\*(.+?)\*/g, "$1")
+    .replace(/~~(.+?)~~/g, "$1")
+    .replace(/<u>(.*?)<\/u>/gi, "$1")
+    .replace(/\s*<!--\s*note-align:(?:left|center|right)\s*-->\s*$/i, "")
+    .replace(/[`*_~]/g, "")
+    .trim()
+    .slice(0, 120);
+}
+
+function tabDisplayTitle(tab) {
+  if (!tab) return "Новая заметка";
+  const title = firstLineTitle(tab.text || "");
+  if (title) return title;
+  return tab.isNew ? "Новая заметка" : noteName(tab.path || "Новая заметка.md");
+}
+
+function updateTabLabel(tab) {
+  if (!tab || !els.tabStrip) return;
+  const el = els.tabStrip.querySelector(`[data-tab-id="${tab.id}"]`);
+  const titleEl = el?.querySelector(".tab-title");
+  if (titleEl) titleEl.textContent = tabDisplayTitle(tab);
+  if (el) el.title = `${tabDisplayTitle(tab)}${tab.path ? `\n${tab.path}` : ""}`;
+}
+
+function reorderTabs(dragId, targetId, before = true) {
+  if (!dragId || !targetId || dragId === targetId) return;
+  const from = state.tabs.findIndex(t => t.id === dragId);
+  let to = state.tabs.findIndex(t => t.id === targetId);
+  if (from < 0 || to < 0) return;
+  const [tab] = state.tabs.splice(from, 1);
+  if (from < to) to -= 1;
+  state.tabs.splice(before ? to : to + 1, 0, tab);
+  renderTabs();
+  persistTabsWorkspace();
+}
+
+async function closeOtherTabs(keepId) {
+  const keep = state.tabs.find(t => t.id === keepId);
+  if (!keep) return;
+  const dirtyOthers = state.tabs.filter(t => t.id !== keepId && t.dirty);
+  if (dirtyOthers.length && !confirm(`Закрыть ${dirtyOthers.length} несохранённых вкладок?`)) return;
+  state.tabs = [keep];
+  state.activeTabId = keep.id;
+  await activateTab(keep.id);
+}
+
+function renameUnsavedTab(tab) {
+  const raw = prompt("Имя файла", noteName(tab.path || "Новая заметка.md"));
+  if (!raw) return;
+  const clean = raw.trim().replace(/[\\/]/g, "-");
+  const folder = folderOf(tab.path || "");
+  tab.path = `${folder ? folder + "/" : ""}${clean}${clean.toLowerCase().endsWith(".md") ? "" : ".md"}`;
+  if (tab.id === state.activeTabId) updatePrimaryPathUI(tab.path);
+  renderTabs();
+}
+
+function moveUnsavedTab(tab) {
+  const raw = prompt("Новый путь заметки", tab.path || "Новая заметка.md");
+  if (!raw) return;
+  let path = normalizeRepoPath(raw);
+  if (!path.toLowerCase().endsWith(".md")) path += ".md";
+  tab.path = path;
+  if (tab.id === state.activeTabId) updatePrimaryPathUI(path);
+  renderTabs();
+}
+
+function showTabContextMenu(tab, event) {
+  event.preventDefault();
+  event.stopPropagation();
+  const saved = !tab.isNew && !!tab.path;
+  showFloatingMenu([
+    { label: "Редактировать", action: async () => { await activateTab(tab.id); state.editorView?.focus(); } },
+    { label: "Переименовать файл", action: () => saved ? renameNoteFile(tab.path) : renameUnsavedTab(tab) },
+    { label: "Переместить…", action: () => saved ? moveNoteFile(tab.path) : moveUnsavedTab(tab) },
+    { label: "Создать копию", action: () => saved ? duplicateNoteFile(tab.path) : (() => { const copy = addNewTab(suggestedNewNotePath(), tab.text || ""); activateTab(copy.id); })() },
+    { label: "Скопировать путь", action: () => copyRepoPath(tab.path || "") },
+    { separator: true },
+    { label: "Закрыть", action: () => closeTab(tab.id) },
+    { label: "Закрыть остальные", action: () => closeOtherTabs(tab.id) },
+  ], event.clientX, event.clientY);
 }
 
 function renderTabs() {
@@ -148,12 +326,39 @@ function renderTabs() {
   for (const tab of state.tabs) {
     const el = document.createElement("button");
     el.type = "button";
+    el.draggable = true;
     el.dataset.tabId = tab.id;
     el.className = `note-tab ${tab.id === state.activeTabId ? "active" : ""} ${tab.dirty ? "dirty" : ""}`;
-    el.title = tab.path || "Новая заметка";
-    el.innerHTML = `<svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h4"/></svg><span class="tab-title">${escapeHtml(noteName(tab.path || "Новая заметка.md"))}</span>${tab.dirty ? '<span class="tab-dirty">●</span>' : ''}<span class="tab-close" title="Закрыть">×</span>`;
+    el.title = `${tabDisplayTitle(tab)}${tab.path ? `\n${tab.path}` : ""}`;
+    el.innerHTML = `<svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h4"/></svg><span class="tab-title">${escapeHtml(tabDisplayTitle(tab))}</span>${tab.dirty ? '<span class="tab-dirty">●</span>' : ''}<span class="tab-close" title="Закрыть">×</span>`;
     el.addEventListener("click", e => { if (!e.target.closest(".tab-close")) activateTab(tab.id); });
+    el.addEventListener("contextmenu", e => showTabContextMenu(tab, e));
     el.querySelector(".tab-close")?.addEventListener("click", e => { e.stopPropagation(); closeTab(tab.id); });
+
+    el.addEventListener("dragstart", e => {
+      state.dragTabId = tab.id;
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/private-vault-tab", tab.id);
+      requestAnimationFrame(() => el.classList.add("dragging"));
+    });
+    el.addEventListener("dragend", () => { state.dragTabId = null; el.classList.remove("dragging"); });
+    el.addEventListener("dragover", e => {
+      if (!state.dragTabId || state.dragTabId === tab.id) return;
+      e.preventDefault();
+      const r = el.getBoundingClientRect();
+      const before = e.clientX < r.left + r.width / 2;
+      el.classList.toggle("drop-before", before);
+      el.classList.toggle("drop-after", !before);
+    });
+    el.addEventListener("dragleave", () => el.classList.remove("drop-before", "drop-after"));
+    el.addEventListener("drop", e => {
+      if (!state.dragTabId || state.dragTabId === tab.id) return;
+      e.preventDefault();
+      const r = el.getBoundingClientRect();
+      reorderTabs(state.dragTabId, tab.id, e.clientX < r.left + r.width / 2);
+      state.dragTabId = null;
+      el.classList.remove("drop-before", "drop-after");
+    });
     els.tabStrip.appendChild(el);
   }
   requestAnimationFrame(() => els.tabStrip.querySelector(".note-tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" }));
@@ -248,7 +453,7 @@ function scheduleDerivedDocumentUI(text) {
   derivedUiTimer = setTimeout(() => {
     renderOutgoing(text);
     updateDocumentStatus(text);
-  }, 90);
+  }, 140);
 }
 
 function updateDocumentStatus(text = "") {
@@ -270,26 +475,40 @@ function folderOf(path = "") {
   return clean.includes("/") ? clean.slice(0, clean.lastIndexOf("/")) : "";
 }
 
+
 function renderBreadcrumb(target, path) {
   if (!target) return;
   target.innerHTML = "";
-  const parts = String(path || "").split("/").filter(Boolean);
-  if (!parts.length) { target.textContent = "Без пути"; return; }
+  const folder = folderOf(path || "");
+  const parts = folder.split("/").filter(Boolean);
+  if (!parts.length) {
+    const root = document.createElement("span");
+    root.className = "crumb current root-crumb";
+    root.textContent = "Корень";
+    target.appendChild(root);
+    return;
+  }
   let cumulative = "";
   parts.forEach((part, i) => {
     cumulative = cumulative ? `${cumulative}/${part}` : part;
-    const isLast = i === parts.length - 1;
-    const seg = document.createElement(isLast ? "span" : "button");
-    seg.className = isLast ? "crumb current" : "crumb";
-    seg.textContent = isLast ? part.replace(/\.md$/i, "") : part;
-    if (!isLast) {
-      const folderPath = cumulative;
-      seg.type = "button";
-      seg.title = `Папка ${folderPath}`;
-      seg.onclick = () => { state.selectedFolder = folderPath; state.expandedFolders.add(folderPath); renderFileList(els.searchInput.value); };
-    }
+    const seg = document.createElement("button");
+    seg.className = `crumb ${i === parts.length - 1 ? "current" : ""}`;
+    seg.type = "button";
+    seg.textContent = part;
+    const folderPath = cumulative;
+    seg.title = `Папка ${folderPath}`;
+    seg.onclick = () => {
+      state.selectedFolder = folderPath;
+      state.expandedFolders.add(folderPath);
+      renderFileList(els.searchInput.value);
+    };
     target.appendChild(seg);
-    if (!isLast) { const sep = document.createElement("span"); sep.className = "crumb-sep"; sep.textContent = "›"; target.appendChild(sep); }
+    if (i < parts.length - 1) {
+      const sep = document.createElement("span");
+      sep.className = "crumb-sep";
+      sep.textContent = "›";
+      target.appendChild(sep);
+    }
   });
 }
 
@@ -436,6 +655,68 @@ function toggleContextSidebar() {
   }
 }
 
+
+// ---------- Цвета папок (локальная настройка конкретного браузера) ----------
+function folderColorStorageKey() {
+  return `pv_folder_colors:${state.owner || "unknown"}/${state.repo || "unknown"}`;
+}
+
+function loadFolderColors() {
+  try {
+    const value = JSON.parse(localStorage.getItem(folderColorStorageKey()) || "{}");
+    state.folderColors = value && typeof value === "object" ? value : {};
+  } catch { state.folderColors = {}; }
+}
+
+function saveFolderColors() {
+  try { localStorage.setItem(folderColorStorageKey(), JSON.stringify(state.folderColors || {})); } catch {}
+}
+
+function requestFolderColor(path) {
+  state.folderColorTarget = normalizeRepoPath(path || "");
+  if (!state.folderColorTarget || !els.folderColorInput) return;
+  els.folderColorInput.value = state.folderColors[state.folderColorTarget] || "#f5bdd0";
+  try {
+    if (typeof els.folderColorInput.showPicker === "function") els.folderColorInput.showPicker();
+    else els.folderColorInput.click();
+  } catch { els.folderColorInput.click(); }
+}
+
+function applyFolderColor(color) {
+  const path = state.folderColorTarget;
+  if (!path || !/^#[0-9a-fA-F]{6}$/.test(color || "")) return;
+  state.folderColors[path] = color;
+  saveFolderColors();
+  renderFileList(els.searchInput.value);
+  state.folderColorTarget = null;
+}
+
+function resetFolderColor(path) {
+  path = normalizeRepoPath(path || "");
+  if (!path) return;
+  delete state.folderColors[path];
+  saveFolderColors();
+  renderFileList(els.searchInput.value);
+}
+
+function remapFolderColors(oldFolder, newFolder) {
+  const next = {};
+  for (const [path, color] of Object.entries(state.folderColors || {})) {
+    if (path === oldFolder || path.startsWith(oldFolder + "/")) next[newFolder + path.slice(oldFolder.length)] = color;
+    else next[path] = color;
+  }
+  state.folderColors = next;
+  saveFolderColors();
+}
+
+function removeFolderColors(folder) {
+  for (const path of Object.keys(state.folderColors || {})) {
+    if (path === folder || path.startsWith(folder + "/")) delete state.folderColors[path];
+  }
+  saveFolderColors();
+}
+
+// ---------- Подключение к vault и загрузка дерева файлов ----------
 async function connect() {
   els.loginError.textContent = "";
   state.owner = els.ownerInput.value.trim();
@@ -456,8 +737,10 @@ async function connect() {
     sessionStorage.setItem("pv_repo", state.repo);
     sessionStorage.setItem("pv_token", state.token);
 
-    els.vaultTitle.textContent = state.repo;
+    els.vaultTitle.textContent = "luna";
     els.branchStatus.textContent = state.branch;
+    loadFolderColors();
+    state._expandedLoaded = false;
     await loadTree();
 
     els.loginView.classList.add("hidden");
@@ -478,11 +761,30 @@ async function loadTree() {
   state.files = (tree.tree || []).filter(x => x.type === "blob");
   state.notes = state.files.filter(x => x.path.toLowerCase().endsWith(".md"));
   state.contents.clear();
+  updateVaultStorage(Boolean(tree.truncated));
   renderFileList();
+}
+
+// v1.6 File Explorer: persist expanded/collapsed folders
+function saveExpandedFolders() {
+  try { localStorage.setItem(`pv_expanded_folders:${state.owner}/${state.repo}`, JSON.stringify(Array.from(state.expandedFolders || []))); } catch {}
+}
+function loadExpandedFolders() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(`pv_expanded_folders:${state.owner}/${state.repo}`) || "[]");
+    state.expandedFolders = new Set(Array.isArray(saved) ? saved : []);
+  } catch { state.expandedFolders = new Set(); }
 }
 
 function noteName(path) {
   return path.split("/").pop().replace(/\.md$/i, "");
+}
+
+// v1.6: technical folders hidden from normal explorer
+const HIDDEN_TECH_FOLDERS = [".obsidian", ".attachments", ".system", "stats", "planner-data"];
+function isHiddenTechFolder(path) {
+  const first = normalizeRepoPath(path).split("/")[0];
+  return HIDDEN_TECH_FOLDERS.includes(first);
 }
 
 function buildFileTree(notes) {
@@ -500,7 +802,7 @@ function buildFileTree(notes) {
   };
 
   // Git does not store empty folders, so .gitkeep files are used as folder placeholders.
-  for (const file of state.files) ensureFolder(folderOf(file.path));
+  for (const file of state.files.filter(f => !isHiddenTechFolder(f.path))) ensureFolder(folderOf(file.path));
 
   for (const note of notes.slice().sort((a, b) => a.path.localeCompare(b.path, "ru"))) {
     const parts = note.path.split("/");
@@ -539,9 +841,11 @@ function renderFileList(filter = "") {
     return;
   }
 
-  const tree = buildFileTree(state.notes);
-  if (!state.expandedFolders.size) {
-    for (const [name] of tree.folders) state.expandedFolders.add(name);
+  const tree = buildFileTree(state.notes.filter(n => !isHiddenTechFolder(n.path)));
+  // v1.6: do not expand everything on startup. Restore user's tree state.
+  if (!state._expandedLoaded) {
+    loadExpandedFolders();
+    state._expandedLoaded = true;
   }
 
   const renderNode = (node, container, level = 0) => {
@@ -550,6 +854,8 @@ function renderFileList(filter = "") {
       const row = document.createElement("button");
       row.className = `folder-row ${open ? "open" : ""} ${state.selectedFolder === folder.path ? "selected" : ""}`;
       row.style.paddingLeft = `${6 + level * 13}px`;
+      const folderColor = state.folderColors[folder.path] || "";
+      if (folderColor) { row.classList.add("custom-color"); row.style.setProperty("--folder-color", folderColor); }
       row.innerHTML = `<span class="folder-chevron">›</span><svg class="tree-icon folder-icon" viewBox="0 0 24 24"><path d="M3.5 6.5h6l2 2H20.5v9.5H3.5z"/></svg><span class="folder-name">${escapeHtml(name)}</span>`;
       const children = document.createElement("div");
       children.className = `folder-children ${open ? "open" : ""}`;
@@ -564,6 +870,7 @@ function renderFileList(filter = "") {
         state.selectedFolder = folder.path;
         if (state.expandedFolders.has(folder.path)) state.expandedFolders.delete(folder.path);
         else state.expandedFolders.add(folder.path);
+        saveExpandedFolders();
         renderFileList(els.searchInput.value);
       };
       row.oncontextmenu = e => {
@@ -576,6 +883,9 @@ function renderFileList(filter = "") {
           { label: "Переименовать", action: () => renameFolder(folder.path) },
           { label: "Переместить…", action: () => moveFolderPrompt(folder.path) },
           { label: "Скопировать путь", action: () => copyRepoPath(folder.path) },
+          { separator: true },
+          { label: "Цвет папки…", action: () => requestFolderColor(folder.path) },
+          ...(state.folderColors[folder.path] ? [{ label: "Сбросить цвет", action: () => resetFolderColor(folder.path) }] : []),
           { separator: true },
           { label: "Удалить папку", danger: true, action: () => deleteFolder(folder.path) },
         ], e.clientX, e.clientY);
@@ -629,14 +939,8 @@ function normalizeWikiTarget(target) {
   return target.split("|")[0].split("#")[0].trim().replace(/\.md$/i, "");
 }
 
-function wikiTargetToPath(target) {
-  const clean = normalizeWikiTarget(target);
-  if (!clean) return null;
-  const exact = state.notes.find(n => n.path.replace(/\.md$/i, "") === clean);
-  if (exact) return exact.path;
-  const lower = clean.toLowerCase();
-  const byName = state.notes.find(n => noteName(n.path).toLowerCase() === lower);
-  return byName ? byName.path : null;
+function wikiTargetToPath(target, source = state.current || "") {
+  return resolveNote(target, source, state.notes);
 }
 
 function extractWikiLinks(text) {
@@ -653,6 +957,7 @@ function extractWikiLinks(text) {
   return out;
 }
 
+// ---------- Live Preview: wiki-ссылки, задачи, изображения и внешние ссылки ----------
 class WikiLinkWidget extends WidgetType {
   constructor(raw, resolved) {
     super();
@@ -678,7 +983,7 @@ class WikiLinkWidget extends WidgetType {
     });
     return span;
   }
-  ignoreEvent() { return false; }
+  ignoreEvent() { return true; }
 }
 
 function selectionTouches(view, from, to) {
@@ -723,7 +1028,7 @@ function resolveImageRepoPath(target, notePath = "") {
   let clean = String(target || "").trim().replace(/^<|>$/g, "");
   try { clean = decodeURIComponent(clean); } catch {}
   if (/^(https?:|data:|blob:)/i.test(clean)) return { external: true, path: clean };
-  clean = clean.replace(/^\.\//, "").replace(/\/g, "/");
+  clean = clean.replace(/^\.\//, "").replace(/\\/g, "/");
 
   const noteFolder = folderOf(notePath);
   if (noteFolder) {
@@ -759,76 +1064,160 @@ async function privateImageUrl(path) {
   return url;
 }
 
-class ImageWidget extends WidgetType {
-  constructor(target, alt, width, notePath) {
-    super(); this.target = target; this.alt = alt || ""; this.width = width || null; this.notePath = notePath || "";
+
+function updateImageWidthInView(view, from, to, width) {
+  try {
+    const raw = view.state.doc.sliceString(from, to);
+    const w = Math.max(120, Math.min(1600, Math.round(width)));
+    let next = raw;
+    if (/^!\[\[[\s\S]+\]\]$/.test(raw)) {
+      next = /\|\d+\]\]$/.test(raw) ? raw.replace(/\|\d+\]\]$/, `|${w}]]`) : raw.replace(/\]\]$/, `|${w}]]`);
+    }
+    if (next !== raw) view.dispatch({ changes: { from, to, insert: next } });
+  } catch {}
+}
+
+class ImageInlineWidget extends WidgetType {
+  constructor(target, alt, width, notePath, from, to) {
+    super();
+    this.target = target;
+    this.alt = alt || "";
+    this.width = width || 520;
+    this.notePath = notePath || "";
+    this.from = from;
+    this.to = to;
   }
   eq(other) {
-    return other.target === this.target && other.alt === this.alt && other.width === this.width && other.notePath === this.notePath;
+    return other.target === this.target && other.alt === this.alt && other.width === this.width &&
+      other.notePath === this.notePath && other.from === this.from && other.to === this.to;
   }
-  toDOM() {
-    const wrap = document.createElement("figure");
-    wrap.className = "cm-image-widget cm-image-preview";
-    const status = document.createElement("div");
-    status.className = "image-loading";
-    status.textContent = "Загрузка изображения…";
-    wrap.appendChild(status);
+  toDOM(view) {
+    const wrap = document.createElement("span");
+    wrap.className = "cm-inline-image-widget";
+    wrap.contentEditable = "false";
+    wrap.draggable = true;
+    wrap.dataset.imageTarget = this.target;
+    const img = document.createElement("img");
+    img.alt = this.alt || this.target.split("/").pop() || "image";
+    img.style.width = `${Math.max(120, Math.min(1600, Number(this.width) || 520))}px`;
+    img.style.maxWidth = "100%";
+    const loading = document.createElement("span");
+    loading.className = "cm-image-loading";
+    loading.textContent = "Загрузка…";
+    const handle = document.createElement("span");
+    handle.className = "cm-image-resize-handle";
+    handle.title = "Потяни, чтобы изменить размер";
+    wrap.append(img, loading, handle);
+
     const resolved = resolveImageRepoPath(this.target, this.notePath);
     const show = url => {
-      const img = document.createElement("img");
-      img.alt = this.alt || this.target.split("/").pop();
-      if (this.width) img.style.maxWidth = `${Math.max(80, Math.min(1600, Number(this.width) || 600))}px`;
       img.src = url;
-      img.onload = () => status.remove();
-      img.onerror = () => { status.textContent = `Не удалось открыть ${this.target}`; status.classList.add("error"); };
-      wrap.appendChild(img);
+      img.addEventListener("load", () => loading.remove(), { once: true });
+      img.addEventListener("error", () => {
+        loading.textContent = `Не удалось открыть ${this.target}`;
+        loading.classList.add("error");
+      }, { once: true });
     };
     if (resolved.external) show(resolved.path);
     else privateImageUrl(resolved.path).then(show).catch(err => {
-      status.textContent = err?.message || `Изображение не найдено: ${this.target}`;
-      status.classList.add("error");
+      loading.textContent = err?.message || `Не удалось открыть ${this.target}`;
+      loading.classList.add("error");
+    });
+
+    wrap.addEventListener("dragstart", e => {
+      const markdown = view.state.doc.sliceString(this.from, this.to);
+      state.dragImage = { view, from: this.from, to: this.to, markdown };
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/private-vault-image", markdown);
+      e.stopPropagation();
+    });
+    wrap.addEventListener("dragend", () => { setTimeout(() => { state.dragImage = null; }, 0); });
+
+    handle.addEventListener("pointerdown", e => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startWidth = img.getBoundingClientRect().width || Number(this.width) || 520;
+      handle.setPointerCapture?.(e.pointerId);
+      const move = ev => {
+        const next = Math.max(120, Math.min(1600, startWidth + ev.clientX - startX));
+        img.style.width = `${next}px`;
+      };
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        const finalWidth = img.getBoundingClientRect().width || startWidth;
+        updateImageWidthInView(view, this.from, this.to, finalWidth);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up, { once: true });
     });
     return wrap;
+  }
+  ignoreEvent(event) { return !!event?.target?.closest?.(".cm-inline-image-widget"); }
+}
+
+class TaskInlineWidget extends WidgetType {
+  constructor(checked, checkPos) { super(); this.checked = checked; this.checkPos = checkPos; }
+  eq(other) { return other.checked === this.checked && other.checkPos === this.checkPos; }
+  toDOM(view) {
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.className = "task-inline-widget";
+    input.checked = this.checked;
+    input.tabIndex = -1;
+    input.setAttribute("aria-label", this.checked ? "Выполнено" : "Не выполнено");
+    input.addEventListener("pointerdown", e => { e.preventDefault(); e.stopPropagation(); });
+    input.addEventListener("click", e => {
+      e.preventDefault();
+      e.stopPropagation();
+      const current = view.state.doc.sliceString(this.checkPos, this.checkPos + 1);
+      view.dispatch({ changes: { from: this.checkPos, to: this.checkPos + 1, insert: /[xX]/.test(current) ? " " : "x" } });
+    });
+    return input;
   }
   ignoreEvent() { return true; }
 }
 
-function detectLiveBlocks(text) {
-  const lines = String(text).split("\n");
-  const starts = [];
-  let offset = 0;
-  for (let i = 0; i < lines.length; i++) {
-    starts.push(offset);
-    offset += lines[i].length + (i < lines.length - 1 ? 1 : 0);
+class BulletInlineWidget extends WidgetType {
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "bullet-inline-widget";
+    span.textContent = "•";
+    return span;
   }
-  const blocks = [];
-  for (let i = 0; i < lines.length; i++) {
-    const obsidianImage = lines[i].match(/^\s*!\[\[([^\]|]+?\.(?:png|jpe?g|gif|webp|svg|avif|bmp))(?:\|(\d+))?\]\]\s*$/i);
-    const markdownImage = lines[i].match(/^\s*!\[([^\]]*)\]\(([^)]+)\)\s*$/i);
-    if (obsidianImage || markdownImage) {
-      const target = obsidianImage ? obsidianImage[1] : markdownImage[2];
-      const from = starts[i], to = starts[i] + lines[i].length;
-      blocks.push({ type: "image", from, to, target, alt: obsidianImage ? "" : markdownImage[1], width: obsidianImage ? obsidianImage[2] : null, text: lines[i] });
-    }
+  ignoreEvent() { return true; }
+}
+
+class ExternalLinkWidget extends WidgetType {
+  constructor(label, href) { super(); this.label = label; this.href = href; }
+  eq(other) { return other.label === this.label && other.href === this.href; }
+  toDOM() {
+    const a = document.createElement("a");
+    a.className = "cm-live-link-chip";
+    a.href = this.href;
+    a.textContent = this.label;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.addEventListener("mousedown", e => e.preventDefault());
+    a.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); window.open(this.href, "_blank", "noopener,noreferrer"); });
+    return a;
   }
-  return blocks;
+  ignoreEvent() { return true; }
 }
 
 function buildLiveDecorations(view) {
   const ranges = [];
   const seenLines = new Set();
   const doc = view.state.doc;
-  const fullText = doc.toString();
-  const blocks = detectLiveBlocks(fullText);
+  const sel = view.state.selection.main;
+  const activeLines = new Set([doc.lineAt(sel.from).number, doc.lineAt(sel.to).number]);
   const viewPath = els.secondaryLiveEditorHost?.contains(view.dom) ? state.secondary.path : (els.pathInput?.value || state.current || "");
 
-  for (const block of blocks) {
-    const visible = view.visibleRanges.some(vr => block.to >= vr.from && block.from <= vr.to);
-    if (!visible) continue;
-    const widget = new ImageWidget(block.target, block.alt, block.width, viewPath);
-    ranges.push(Decoration.widget({ widget, block: true, side: 1 }).range(block.to));
-    ranges.push(Decoration.line({ class: "cm-image-source-line" }).range(block.from));
-  }
+  const hide = (from, to, active) => {
+    if (to <= from || active) return;
+    ranges.push(Decoration.replace({}).range(from, to));
+  };
 
   for (const vr of view.visibleRanges) {
     let pos = vr.from;
@@ -838,78 +1227,135 @@ function buildLiveDecorations(view) {
         seenLines.add(line.number);
         const text = line.text;
         const base = line.from;
-        {
-          const wikiSpans = [];
-          const wikiRe = /\[\[([^\]]+)\]\]/g;
-          let wm;
-          while ((wm = wikiRe.exec(text)) !== null) {
-            const from = base + wm.index, to = from + wm[0].length;
-            wikiSpans.push([from, to]);
-            const resolved = wikiTargetToPath(wm[1]);
-            ranges.push(Decoration.replace({ widget: new WikiLinkWidget(wm[1], resolved), inclusive: false }).range(from, to));
+        const active = activeLines.has(line.number);
+
+        const alignMatch = text.match(/\s*<!--\s*note-align:(left|center|right)\s*-->\s*$/i);
+        if (alignMatch) {
+          ranges.push(Decoration.line({ class: `cm-note-align-${alignMatch[1].toLowerCase()}` }).range(base));
+          const markerIndex = text.lastIndexOf("<!--");
+          if (markerIndex >= 0) ranges.push(Decoration.replace({}).range(base + markerIndex, line.to));
+        }
+
+        if (line.number === 1 && text.trim() && !/^#{1,6}\s+/.test(text)) {
+          ranges.push(Decoration.line({ class: "cm-note-title-line" }).range(base));
+          ranges.push(Decoration.mark({ class: "cm-note-title-text" }).range(base, line.to));
+        }
+
+        const imageSpans = [];
+        const obsImageRe = /!\[\[([^\]|]+?\.(?:png|jpe?g|gif|webp|svg|avif|bmp))(?:\|(\d+))?\]\]/ig;
+        let imgm;
+        while ((imgm = obsImageRe.exec(text)) !== null) {
+          const from = base + imgm.index, to = from + imgm[0].length;
+          imageSpans.push([from, to]);
+          ranges.push(Decoration.replace({
+            widget: new ImageInlineWidget(imgm[1], "", imgm[2] || 520, viewPath, from, to)
+          }).range(from, to));
+        }
+        const mdImageRe = /!\[([^\]\n]*)\]\(([^)\n]+)\)/g;
+        while ((imgm = mdImageRe.exec(text)) !== null) {
+          const from = base + imgm.index, to = from + imgm[0].length;
+          imageSpans.push([from, to]);
+          ranges.push(Decoration.replace({
+            widget: new ImageInlineWidget(imgm[2], imgm[1], 520, viewPath, from, to)
+          }).range(from, to));
+        }
+        const overlapsImage = (from, to) => imageSpans.some(([a,b]) => from < b && to > a);
+
+        const wikiSpans = [];
+        const wikiRe = /(?<!!)\[\[([^\]]+)\]\]/g;
+        let wm;
+        while ((wm = wikiRe.exec(text)) !== null) {
+          const from = base + wm.index, to = from + wm[0].length;
+          if (overlapsImage(from, to)) continue;
+          wikiSpans.push([from, to]);
+          const rawWiki = wm[1];
+          const resolved = wikiTargetToPath(rawWiki);
+          if (!active) ranges.push(Decoration.replace({ widget: new WikiLinkWidget(rawWiki, resolved) }).range(from, to));
+          else ranges.push(Decoration.mark({ class: `cm-live-wiki-target ${resolved ? "" : "missing"}`, attributes: { "data-wiki": rawWiki } }).range(from + 2, to - 2));
+        }
+        const overlapsWiki = (from, to) => wikiSpans.some(([a,b]) => from < b && to > a);
+
+        const linkRe = /(?<!!)\[([^\]\n]+)\]\(([^)\n]+)\)/g;
+        let lm;
+        while ((lm = linkRe.exec(text)) !== null) {
+          const from = base + lm.index, to = from + lm[0].length;
+          if (overlapsWiki(from, to) || overlapsImage(from, to)) continue;
+          if (!active) ranges.push(Decoration.replace({ widget: new ExternalLinkWidget(lm[1], lm[2]) }).range(from, to));
+          else {
+            const labelFrom = from + 1, labelTo = labelFrom + lm[1].length;
+            ranges.push(Decoration.mark({ class: "cm-live-link", attributes: { "data-href": lm[2] } }).range(labelFrom, labelTo));
           }
-          const overlapsWiki = (from, to) => wikiSpans.some(([a,b]) => from < b && to > a);
+        }
 
-          const hm = text.match(/^(#{1,6})\s+/);
-          const duplicateTitle = !!(hm && hm[1].length === 1 && line.number === 1 && viewPath && text.slice(hm[0].length).trim() === noteName(viewPath));
-          if (duplicateTitle) {
-            ranges.push(Decoration.replace({}).range(line.from, line.to));
-            ranges.push(Decoration.line({ class: "cm-duplicate-title-line" }).range(base));
-          } else if (hm) {
-            const markerTo = base + hm[0].length, level = hm[1].length;
-            ranges.push(Decoration.line({ class: `cm-live-heading-line cm-live-heading-${level}` }).range(base));
-            ranges.push(Decoration.mark({ class: "cm-md-marker" }).range(base, markerTo));
-            if (markerTo < line.to) ranges.push(Decoration.mark({ class: `cm-live-heading-text cm-live-h${level}` }).range(markerTo, line.to));
+        const hm = text.match(/^(#{1,6})\s+/);
+        if (hm) {
+          const markerTo = base + hm[0].length, level = hm[1].length;
+          ranges.push(Decoration.line({ class: `cm-live-heading-line cm-live-heading-${level}` }).range(base));
+          hide(base, markerTo, active);
+          if (markerTo < line.to) ranges.push(Decoration.mark({ class: `cm-live-heading-text cm-live-h${level}` }).range(markerTo, line.to));
+        }
+        if (/^\s*>\s?/.test(text)) ranges.push(Decoration.line({ class: "cm-live-blockquote" }).range(base));
+
+        const boldRe = /\*\*([^\n]+?)\*\*/g; let bm;
+        while ((bm = boldRe.exec(text)) !== null) {
+          const from = base + bm.index, to = from + bm[0].length;
+          if (!overlapsWiki(from, to) && !overlapsImage(from, to)) {
+            hide(from, from + 2, active); hide(to - 2, to, active);
+            ranges.push(Decoration.mark({ class: "cm-live-bold" }).range(from + 2, to - 2));
           }
-
-          const qm = text.match(/^(\s*)>\s?/);
-          if (qm) ranges.push(Decoration.line({ class: "cm-live-blockquote" }).range(base));
-
-          const boldRe = /(\*\*|__)([^\n]+?)\1/g; let bm;
-          while ((bm = boldRe.exec(text)) !== null) {
-            const from = base + bm.index, openTo = from + bm[1].length, innerTo = openTo + bm[2].length, to = innerTo + bm[1].length;
-            if (!overlapsWiki(from, to)) ranges.push(Decoration.mark({ class: "cm-live-bold" }).range(openTo, innerTo));
-          }
-
-          const italicRe = /(\*|_)([^\n]+?)\1/g; let im;
-          while ((im = italicRe.exec(text)) !== null) {
-            const from = base + im.index, to = from + im[0].length, prev = text[im.index - 1] || "", next = text[im.index + im[0].length] || "";
-            if (prev === im[1] || next === im[1] || overlapsWiki(from, to)) continue;
+        }
+        const italicRe = /(?<!\*)\*([^*\n]+?)\*(?!\*)/g; let im;
+        while ((im = italicRe.exec(text)) !== null) {
+          const from = base + im.index, to = from + im[0].length;
+          if (!overlapsWiki(from, to) && !overlapsImage(from, to)) {
+            hide(from, from + 1, active); hide(to - 1, to, active);
             ranges.push(Decoration.mark({ class: "cm-live-italic" }).range(from + 1, to - 1));
           }
-
-          const strikeRe = /~~([^\n]+?)~~/g; let sm;
-          while ((sm = strikeRe.exec(text)) !== null) {
-            const from = base + sm.index, to = from + sm[0].length;
-            if (!overlapsWiki(from, to)) ranges.push(Decoration.mark({ class: "cm-live-strike" }).range(from + 2, to - 2));
+        }
+        const strikeRe = /~~([^\n]+?)~~/g; let sm;
+        while ((sm = strikeRe.exec(text)) !== null) {
+          const from = base + sm.index, to = from + sm[0].length;
+          if (!overlapsWiki(from, to) && !overlapsImage(from, to)) {
+            hide(from, from + 2, active); hide(to - 2, to, active);
+            ranges.push(Decoration.mark({ class: "cm-live-strike" }).range(from + 2, to - 2));
           }
-
-          const highlightRe = /==([^\n]+?)==/g; let hlm;
-          while ((hlm = highlightRe.exec(text)) !== null) {
-            const from = base + hlm.index, to = from + hlm[0].length;
-            if (!overlapsWiki(from, to)) ranges.push(Decoration.mark({ class: "cm-live-highlight" }).range(from + 2, to - 2));
+        }
+        const highlightRe = /==(?:\{(#[0-9a-fA-F]{6})\})?([^\n]+?)==/g; let hlm;
+        while ((hlm = highlightRe.exec(text)) !== null) {
+          const from = base + hlm.index, to = from + hlm[0].length;
+          if (!overlapsWiki(from, to) && !overlapsImage(from, to)) {
+            const prefixLen = hlm[1] ? 11 : 2; // =={#RRGGBB}
+            hide(from, from + prefixLen, active); hide(to - 2, to, active);
+            const attrs = hlm[1] ? { style: `background-color:${hlm[1]}` } : {};
+            ranges.push(Decoration.mark({ class: "cm-live-highlight", attributes: attrs }).range(from + prefixLen, to - 2));
           }
+        }
+        const underlineRe = /<u>([^\n]+?)<\/u>/gi; let ulm;
+        while ((ulm = underlineRe.exec(text)) !== null) {
+          const from = base + ulm.index, to = from + ulm[0].length;
+          hide(from, from + 3, active); hide(to - 4, to, active);
+          ranges.push(Decoration.mark({ class: "cm-live-underline" }).range(from + 3, to - 4));
+        }
 
-          const underlineRe = /<u>([^\n]+?)<\/u>/gi; let ulm;
-          while ((ulm = underlineRe.exec(text)) !== null) {
-            const from = base + ulm.index, to = from + ulm[0].length;
-            ranges.push(Decoration.mark({ class: "cm-live-underline" }).range(from + 3, to - 4));
-          }
-
-          const linkRe = /\[([^\]\n]+)\]\(([^)\n]+)\)/g; let lm;
-          while ((lm = linkRe.exec(text)) !== null) {
-            const from = base + lm.index, labelFrom = from + 1, labelTo = labelFrom + lm[1].length, to = from + lm[0].length;
-            if (!overlapsWiki(from, to)) ranges.push(Decoration.mark({ class: "cm-live-link" }).range(labelFrom, labelTo));
-          }
-
-          const taskMatch = text.match(/^(\s*)([-*+])\s+\[([ xX])\](\s+)/);
-          if (taskMatch) {
-            ranges.push(Decoration.line({ class: "cm-live-task-line" }).range(base));
+        const taskMatch = text.match(/^(\s*)([-*+])\s+\[([ xX])\](\s+)/);
+        if (taskMatch) {
+          ranges.push(Decoration.line({ class: "cm-live-task-line" }).range(base));
+          if (!active) {
             const markerFrom = base + taskMatch[1].length;
-            const markerTo = base + taskMatch[0].length - taskMatch[4].length;
+            const markerTo = base + taskMatch[0].length;
             const checkPos = base + taskMatch[0].indexOf("[") + 1;
-            ranges.push(Decoration.replace({ widget: new TaskCheckboxWidget(/[xX]/.test(taskMatch[3]), checkPos), inclusive: false }).range(markerFrom, markerTo));
-          } else if (/^\s*[-*+]\s+/.test(text) || /^\s*\d+[.)]\s+/.test(text)) {
+            ranges.push(Decoration.replace({ widget: new TaskInlineWidget(/[xX]/.test(taskMatch[3]), checkPos) }).range(markerFrom, markerTo));
+          }
+        } else {
+          const bulletMatch = text.match(/^(\s*)([-*+])(\s+)/);
+          if (bulletMatch) {
+            ranges.push(Decoration.line({ class: "cm-live-list-line" }).range(base));
+            if (!active) {
+              const markerFrom = base + bulletMatch[1].length;
+              const markerTo = base + bulletMatch[0].length;
+              ranges.push(Decoration.replace({ widget: new BulletInlineWidget() }).range(markerFrom, markerTo));
+            }
+          } else if (/^\s*\d+[.)]\s+/.test(text)) {
             ranges.push(Decoration.line({ class: "cm-live-list-line" }).range(base));
           }
         }
@@ -922,13 +1368,37 @@ function buildLiveDecorations(view) {
   return Decoration.set(ranges, true);
 }
 
-
 const livePreviewDecorations = ViewPlugin.fromClass(class {
   constructor(view) { this.decorations = buildLiveDecorations(view); }
   update(update) {
-    if (update.docChanged || update.viewportChanged) this.decorations = buildLiveDecorations(update.view);
+    if (update.docChanged || update.viewportChanged || update.selectionSet) this.decorations = buildLiveDecorations(update.view);
   }
 }, { decorations: v => v.decorations });
+
+function handleLiveEditorPointer(event, view, pane = "primary") {
+  const external = event.target?.closest?.(".cm-live-link[data-href]");
+  if (external) {
+    event.preventDefault();
+    event.stopPropagation();
+    const href = external.dataset.href;
+    if (href) window.open(href, "_blank", "noopener,noreferrer");
+    return true;
+  }
+
+  const wiki = event.target?.closest?.(".cm-live-wiki-target[data-wiki]");
+  if (wiki) {
+    event.preventDefault();
+    event.stopPropagation();
+    const raw = wiki.dataset.wiki || "";
+    const resolved = wikiTargetToPath(raw);
+    if (resolved) {
+      if (pane === "secondary" && els.paneHost.classList.contains("split-active")) openInSplit(resolved, state.splitOrientation, false);
+      else openNote(resolved);
+    } else createFromMissingLink(raw);
+    return true;
+  }
+  return false;
+}
 
 function imageFileFromTransfer(dataTransfer) {
   if (!dataTransfer) return null;
@@ -936,10 +1406,10 @@ function imageFileFromTransfer(dataTransfer) {
   return files.find(file => /^image\//i.test(file.type || "") || /\.(png|jpe?g|gif|webp|svg|avif|bmp)$/i.test(file.name || "")) || null;
 }
 
-function initLiveEditor() {
+function initLiveEditor(initialDoc = "") {
   if (state.editorView) return state.editorView;
   state.editorView = new EditorView({
-    doc: "",
+    doc: initialDoc,
     parent: els.liveEditorHost,
     extensions: [
       history(),
@@ -960,6 +1430,7 @@ function initLiveEditor() {
       }),
       EditorView.domEventHandlers({
         keydown(event) { return handleEditorKeydown(event); },
+        mousedown(event, view) { return handleLiveEditorPointer(event, view, "primary"); },
         paste(event) {
           const file = imageFileFromTransfer(event.clipboardData);
           if (!file) return false;
@@ -970,15 +1441,29 @@ function initLiveEditor() {
           uploadImageForPane(file, "primary");
           return true;
         },
-        drop(event) {
+        drop(event, view) {
           const file = imageFileFromTransfer(event.dataTransfer);
-          if (!file) return false;
-          event.preventDefault();
-          const pos = state.editorView.posAtCoords({ x: event.clientX, y: event.clientY }) ?? state.editorView.state.selection.main.head;
-          state.imageTargetPane = "primary";
-          state.imageInsertContext = { pane: "primary", start: pos, end: pos, notePath: els.pathInput.value.trim() || state.current || "" };
-          uploadImageForPane(file, "primary");
-          return true;
+          if (file) {
+            event.preventDefault();
+            const pos = view.posAtCoords({ x: event.clientX, y: event.clientY }) ?? view.state.selection.main.head;
+            state.imageTargetPane = "primary";
+            state.imageInsertContext = { pane: "primary", start: pos, end: pos, notePath: els.pathInput.value.trim() || state.current || "" };
+            uploadImageForPane(file, "primary");
+            return true;
+          }
+          if (state.dragImage?.view === view) {
+            event.preventDefault();
+            const pos = view.posAtCoords({ x: event.clientX, y: event.clientY }) ?? view.state.selection.main.head;
+            const { from, to, markdown } = state.dragImage;
+            if (pos >= from && pos <= to) return true;
+            const changes = pos < from
+              ? [{ from: pos, to: pos, insert: markdown }, { from, to, insert: "" }]
+              : [{ from, to, insert: "" }, { from: pos, to: pos, insert: markdown }];
+            view.dispatch({ changes });
+            state.dragImage = null;
+            return true;
+          }
+          return false;
         },
         blur() { setTimeout(() => hideWikiSuggestions(), 150); return false; },
       }),
@@ -1003,10 +1488,14 @@ function initSecondaryLiveEditor() {
       keymap.of([...markdownKeymap, ...defaultKeymap, ...historyKeymap]),
       EditorView.updateListener.of(update => {
         if (state.secondary.syncing) return;
-        if (update.docChanged) els.secondaryEditorText.value = update.state.doc.toString();
+        if (update.docChanged) {
+          const value = update.state.doc.toString();
+          els.secondaryEditorText.value = value;
+        }
       }),
       EditorView.domEventHandlers({
         keydown(event) { return handleSecondaryKeydown(event); },
+        mousedown(event, view) { return handleLiveEditorPointer(event, view, "secondary"); },
         paste(event) {
           const file = imageFileFromTransfer(event.clipboardData);
           if (!file) return false;
@@ -1017,15 +1506,29 @@ function initSecondaryLiveEditor() {
           uploadImageForPane(file, "secondary");
           return true;
         },
-        drop(event) {
+        drop(event, view) {
           const file = imageFileFromTransfer(event.dataTransfer);
-          if (!file) return false;
-          event.preventDefault();
-          const pos = state.secondary.editorView.posAtCoords({ x: event.clientX, y: event.clientY }) ?? state.secondary.editorView.state.selection.main.head;
-          state.imageTargetPane = "secondary";
-          state.imageInsertContext = { pane: "secondary", start: pos, end: pos, notePath: els.secondaryPathInput.value.trim() || state.secondary.path || "" };
-          uploadImageForPane(file, "secondary");
-          return true;
+          if (file) {
+            event.preventDefault();
+            const pos = view.posAtCoords({ x: event.clientX, y: event.clientY }) ?? view.state.selection.main.head;
+            state.imageTargetPane = "secondary";
+            state.imageInsertContext = { pane: "secondary", start: pos, end: pos, notePath: els.secondaryPathInput.value.trim() || state.secondary.path || "" };
+            uploadImageForPane(file, "secondary");
+            return true;
+          }
+          if (state.dragImage?.view === view) {
+            event.preventDefault();
+            const pos = view.posAtCoords({ x: event.clientX, y: event.clientY }) ?? view.state.selection.main.head;
+            const { from, to, markdown } = state.dragImage;
+            if (pos >= from && pos <= to) return true;
+            const changes = pos < from
+              ? [{ from: pos, to: pos, insert: markdown }, { from, to, insert: "" }]
+              : [{ from, to, insert: "" }, { from: pos, to: pos, insert: markdown }];
+            view.dispatch({ changes });
+            state.dragImage = null;
+            return true;
+          }
+          return false;
         },
       }),
     ],
@@ -1142,13 +1645,24 @@ function secondaryToolbarAction(action) {
   if (action === "italic") return secondaryReplaceSelection("*", "*", "курсив");
   if (action === "strike") return secondaryReplaceSelection("~~", "~~", "зачёркнутый текст");
   if (action === "underline") return secondaryReplaceSelection("<u>", "</u>", "подчёркнутый текст");
-  if (action === "highlight") return secondaryReplaceSelection("==", "==", "выделенный текст");
-  if (action === "link") return secondaryReplaceSelection("[", "](https://)", "текст ссылки");
+  if (action === "highlight") return requestHighlightColor("secondary");
+  if (action === "align-left") return applyLineAlignment("secondary", "left");
+  if (action === "align-center") return applyLineAlignment("secondary", "center");
+  if (action === "align-right") return applyLineAlignment("secondary", "right");
+  if (action === "link") return insertExternalLink("secondary");
   if (action === "image") return requestImageInsert("secondary");
   if (action === "hr") { const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, "\n---\n"); return; }
   if (action === "fullscreen") { document.body.classList.toggle("focus-mode"); return; }
   if (action === "quote") return secondaryPrefixLines(() => "> ");
-  if (action === "wiki") { const sel = secondarySelection(); replaceSecondaryRange(sel.start, sel.end, "[[]]", sel.start + 2); return; }
+  if (action === "wiki") {
+    const sel = secondarySelection();
+    const selected = sel.text.slice(sel.start, sel.end).trim();
+    const target = selected || prompt("Название заметки", "");
+    if (!target) return;
+    const insert = `[[${target}]]`;
+    replaceSecondaryRange(sel.start, sel.end, insert, sel.start + insert.length);
+    return;
+  }
   if (action === "h1") return secondaryPrefixLines(() => "# ");
   if (action === "h2") return secondaryPrefixLines(() => "## ");
   if (action === "h3") return secondaryPrefixLines(() => "### ");
@@ -1176,8 +1690,15 @@ function setLiveEditorDoc(text, cursor = null) {
 }
 
 function setEditorMarkdown(text) {
+  if (state.editorView) {
+    try { state.editorView.destroy(); } catch {}
+    state.editorView = null;
+    els.liveEditorHost.innerHTML = "";
+  }
   els.editorText.value = text;
-  setLiveEditorDoc(text, 0);
+  state.syncingEditor = true;
+  state.editorView = initLiveEditor(text);
+  state.syncingEditor = false;
   updateDocumentStatus(text);
 }
 
@@ -1249,25 +1770,54 @@ async function persistMarkdownFile({ path, oldPath, currentSha, markdownText }) 
 
 async function saveCurrent() {
   const markdownText = getEditorMarkdown();
+  const tab = activeTab();
+  let requestedPath = (els.pathInput.value.trim() || tab?.path || "").trim();
+  if (tab?.isNew) {
+    const title = firstLineTitle(markdownText);
+    if (title) {
+      const folder = folderOf(requestedPath);
+      const safeBase = title.replace(/[\\/:*?"<>|#\[\]]/g, "-").replace(/\s+/g, " ").trim().slice(0, 100) || "Новая заметка";
+      const prefix = folder ? `${folder}/` : "";
+      let candidate = `${prefix}${safeBase}.md`;
+      let n = 2;
+      const occupied = p => state.files.some(f => f.path.toLowerCase() === p.toLowerCase()) || state.tabs.some(t => t.id !== tab.id && t.path?.toLowerCase() === p.toLowerCase());
+      while (occupied(candidate)) candidate = `${prefix}${safeBase} ${n++}.md`;
+      requestedPath = candidate;
+      tab.path = candidate;
+      els.pathInput.value = candidate;
+    }
+  }
+  const oldPath = tab && !tab.isNew ? tab.path : null;
+  const currentSha = tab?.sha || null;
   try {
     setSyncStatus("Сохранение…");
     const saved = await persistMarkdownFile({
-      path: els.pathInput.value.trim(), oldPath: state.current, currentSha: state.currentSha, markdownText,
+      path: requestedPath, oldPath, currentSha, markdownText,
     });
     state.current = saved.path;
     state.currentSha = saved.sha;
-    const tab = activeTab();
     if (tab) {
-      tab.path = saved.path; tab.sha = saved.sha; tab.text = markdownText; tab.savedText = markdownText;
-      tab.isNew = false; tab.unloaded = false; tab.dirty = false;
+      tab.path = saved.path;
+      tab.sha = saved.sha;
+      tab.text = markdownText;
+      tab.savedText = markdownText;
+      tab.isNew = false;
+      tab.unloaded = false;
+      tab.dirty = false;
     }
     updatePrimaryPathUI(saved.path);
     updateActiveNoteTitle(saved.path);
     state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
-    await loadTree();
+    const fileEntry = { path: saved.path, sha: saved.sha, type: "blob" };
+    const fileIndex = state.files.findIndex(f => f.path === saved.path);
+    if (fileIndex >= 0) state.files[fileIndex] = { ...state.files[fileIndex], ...fileEntry };
+    else state.files.push(fileEntry);
+    if (!state.notes.some(n => n.path === saved.path)) state.notes.push(fileEntry);
+    try { await loadTree(); } catch (treeError) { console.warn("Tree refresh after save failed", treeError); renderFileList(els.searchInput.value); }
     state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
     await Promise.all([renderBacklinks(saved.path), renderOutgoing(markdownText)]);
-    renderTabs(); persistTabsWorkspace();
+    renderTabs();
+    persistTabsWorkspace();
     setSyncStatus("Сохранено");
     showToast("Сохранено в GitHub.");
   } catch (e) {
@@ -1289,7 +1839,12 @@ async function saveSecondary() {
     updateSecondaryPathUI(saved.path);
     els.secondaryNoteTitle.textContent = noteName(saved.path);
     state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
-    await loadTree();
+    const fileEntry = { path: saved.path, sha: saved.sha, type: "blob" };
+    const fileIndex = state.files.findIndex(f => f.path === saved.path);
+    if (fileIndex >= 0) state.files[fileIndex] = { ...state.files[fileIndex], ...fileEntry };
+    else state.files.push(fileEntry);
+    if (!state.notes.some(n => n.path === saved.path)) state.notes.push(fileEntry);
+    try { await loadTree(); } catch (treeError) { console.warn("Tree refresh after secondary save failed", treeError); renderFileList(els.searchInput.value); }
     state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
     setSyncStatus("Сохранено");
     showToast("Вторая область сохранена в GitHub.");
@@ -1319,18 +1874,32 @@ function suggestedNewNotePath() {
 }
 
 function newNote(path = null) {
+  // Snapshot the previous tab before changing activeTabId. This prevents a new tab
+  // from inheriting the previous editor buffer.
+  const previous = activeTab();
+  if (previous) {
+    const previousText = getEditorMarkdown();
+    previous.text = previousText;
+    previous.path = (els.pathInput.value || previous.path || "").trim();
+    previous.sha = state.currentSha;
+    previous.dirty = previous.isNew || previousText !== (previous.savedText ?? previousText);
+  }
+
   path = path || suggestedNewNotePath();
-  captureActiveTab();
   path = path.toLowerCase().endsWith(".md") ? path : `${path}.md`;
-  const tab = addNewTab(path, "");
+  const tab = { id: `tab-${++state.tabSeq}`, path, sha: null, text: "", savedText: "", dirty: true, isNew: true, unloaded: false };
+  state.tabs.push(tab);
+  state.activeTabId = tab.id;
   state.current = null;
   state.currentSha = null;
   state.activePane = "primary";
   els.primaryPane.classList.add("pane-active");
   els.secondaryPane.classList.remove("pane-active");
   updatePrimaryPathUI(path);
-  updateActiveNoteTitle(path);
   setEditorMarkdown("");
+  tab.text = "";
+  tab.savedText = "";
+  tab.dirty = true;
   els.emptyState.classList.add("hidden");
   els.editorView.classList.remove("hidden");
   els.backlinksList.textContent = "—";
@@ -1340,6 +1909,7 @@ function newNote(path = null) {
   els.sidebar.classList.remove("open");
   setSyncStatus("Новая заметка");
   renderTabs();
+  persistTabsWorkspace();
   setTimeout(() => state.editorView?.focus(), 0);
 }
 
@@ -1428,8 +1998,70 @@ function uniqueAssetPath(path) {
   return candidate;
 }
 
+
+function extractImageEmbeds(text) {
+  const out = [];
+  const seen = new Set();
+  const lines = String(text || "").split("\n");
+  for (const line of lines) {
+    const obs = line.match(/!\[\[([^\]|]+?\.(?:png|jpe?g|gif|webp|svg|avif|bmp))(?:\|(\d+))?\]\]/i);
+    const md = line.match(/!\[([^\]]*)\]\(([^)]+)\)/i);
+    if (obs) {
+      const key = `obs:${obs[1]}`;
+      if (!seen.has(key)) { seen.add(key); out.push({ target: obs[1], alt: "", width: obs[2] || null }); }
+    } else if (md) {
+      const key = `md:${md[2]}`;
+      if (!seen.has(key)) { seen.add(key); out.push({ target: md[2], alt: md[1] || "", width: null }); }
+    }
+  }
+  return out;
+}
+
+async function renderMediaPreview(text, notePath, targetEl) {
+  if (!targetEl) return;
+  const embeds = extractImageEmbeds(text);
+  const seq = (targetEl._renderSeq || 0) + 1;
+  targetEl._renderSeq = seq;
+  targetEl.innerHTML = "";
+  targetEl.classList.toggle("hidden", !embeds.length);
+  if (!embeds.length) return;
+
+  for (const embed of embeds) {
+    const figure = document.createElement("figure");
+    figure.className = "media-preview-item";
+    const status = document.createElement("div");
+    status.className = "media-preview-status";
+    status.textContent = "Загрузка изображения…";
+    figure.appendChild(status);
+    targetEl.appendChild(figure);
+
+    try {
+      const resolved = resolveImageRepoPath(embed.target, notePath);
+      const url = resolved.external ? resolved.path : await privateImageUrl(resolved.path);
+      if (targetEl._renderSeq !== seq) return;
+      const img = document.createElement("img");
+      img.alt = embed.alt || embed.target.split("/").pop() || "image";
+      img.src = url;
+      if (embed.width) img.style.maxWidth = `${Math.max(80, Math.min(1600, Number(embed.width) || 600))}px`;
+      img.addEventListener("load", () => status.remove(), { once: true });
+      img.addEventListener("error", () => {
+        status.textContent = `Не удалось открыть ${embed.target}`;
+        status.classList.add("error");
+      }, { once: true });
+      figure.appendChild(img);
+      const caption = document.createElement("figcaption");
+      caption.textContent = embed.target;
+      figure.appendChild(caption);
+    } catch (err) {
+      status.textContent = err?.message || `Не удалось открыть ${embed.target}`;
+      status.classList.add("error");
+    }
+  }
+}
+
 function requestImageInsert(pane = "primary") {
   state.imageTargetPane = pane;
+  showToast("Выбери изображение…");
   const selection = pane === "secondary" ? secondarySelection() : currentSelection();
   const notePath = pane === "secondary"
     ? (els.secondaryPathInput.value.trim() || state.secondary.path || "")
@@ -1468,8 +2100,9 @@ async function uploadImageForPane(file, pane = "primary") {
     if (oldUrl?.startsWith?.("blob:")) URL.revokeObjectURL(oldUrl);
     state.mediaUrls.set(path, URL.createObjectURL(file));
 
-    const target = baseFolder && path.startsWith(baseFolder + "/") ? path.slice(baseFolder.length + 1) : path;
-    const markdown = `![[${target}]]\n\n`;
+    // Store the full repository path in the wiki embed. This keeps the image
+    // valid even if the note is later moved to another folder.
+    const markdown = `![[${path}|520]]`;
     if (pane === "secondary") {
       const sel = context.start == null ? secondarySelection() : context;
       replaceSecondaryRange(sel.start, sel.end, markdown, sel.start + markdown.length);
@@ -1567,30 +2200,97 @@ async function deleteNoteFile(path) {
   } catch (e) { showToast(`Не удалось удалить: ${e.message}`); }
 }
 
+// Create one Git tree and advance the branch once. A failed request cannot leave half a move.
+async function commitVaultEntries(message, entries, expectedFiles = []) {
+  const base = `/repos/${encodeURIComponent(state.owner)}/${encodeURIComponent(state.repo)}`;
+  const head = await gh(`${base}/git/ref/heads/${encodeURIComponent(state.branch)}`);
+  const commit = await gh(`${base}/git/commits/${head.object.sha}`);
+  const tree = await gh(`${base}/git/trees/${commit.tree.sha}?recursive=1`);
+  if (tree.truncated) throw new Error("Дерево vault слишком большое для безопасного обновления.");
+  for (const expected of expectedFiles) {
+    const actual = tree.tree.find(f => f.path === expected.path)?.sha || null;
+    if (actual !== (expected.sha || null)) throw new Error("Файлы изменились на другом устройстве. Обнови vault и повтори действие.");
+  }
+  const elements = [];
+  for (const entry of entries) {
+    if (Object.hasOwn(entry, "text")) {
+      const blob = await gh(`${base}/git/blobs`, { method:"POST", body:JSON.stringify({content:entry.text,encoding:"utf-8"}) });
+      elements.push({path:entry.path,mode:"100644",type:"blob",sha:blob.sha});
+    } else elements.push(entry);
+  }
+  const nextTree = await gh(`${base}/git/trees`, {method:"POST",body:JSON.stringify({base_tree:commit.tree.sha,tree:elements})});
+  const nextCommit = await gh(`${base}/git/commits`, {method:"POST",body:JSON.stringify({message,tree:nextTree.sha,parents:[head.object.sha]})});
+  await gh(`${base}/git/refs/heads/${encodeURIComponent(state.branch)}`, {method:"PATCH",body:JSON.stringify({sha:nextCommit.sha,force:false})});
+  return elements;
+}
+
+function rewriteVaultLinks(text, source, notes, oldFolder, newFolder) {
+  let rewritten = rewriteFolderLinks(text,source,notes,oldFolder,newFolder);
+  // Planner/project files contain the same tasks in readable Markdown and structured metadata.
+  rewritten = rewritten.replace(/<!-- (NOTE_PLANNER_STATE|NOTE_PROJECTS_STATE):([A-Za-z0-9+/=]+) -->/g, (full,type,encoded) => {
+    const value = JSON.parse(base64ToUtf8(encoded));
+    if (!Array.isArray(value.tasks)) return full;
+    let changed = false;
+    for (const task of value.tasks) {
+      for (const key of ["text","prepSteps"]) if (typeof task[key] === "string") {
+        const next = rewriteFolderLinks(task[key],source,notes,oldFolder,newFolder);
+        if (next !== task[key]) { task[key] = next; changed = true; }
+      }
+    }
+    return changed ? `<!-- ${type}:${utf8ToBase64(JSON.stringify(value))} -->` : full;
+  });
+  return rewritten;
+}
+
 async function relocateFolder(oldFolder, newFolder) {
   oldFolder = normalizeRepoPath(oldFolder); newFolder = normalizeRepoPath(newFolder);
   if (!oldFolder || !newFolder || oldFolder === newFolder) return;
-  if (newFolder.startsWith(oldFolder + "/")) throw new Error("Нельзя переместить папку внутрь самой себя.");
-  const items = state.files.filter(f => f.path === oldFolder || f.path.startsWith(oldFolder + "/"));
-  if (!items.length) throw new Error("Папка пуста или не найдена.");
-  const targets = items.map(f => ({ source: f, path: newFolder + f.path.slice(oldFolder.length) }));
-  const conflicts = targets.filter(t => existingFile(t.path) && !items.some(i => i.path === t.path));
-  if (conflicts.length) throw new Error(`В папке назначения уже есть ${conflicts.length} конфликтующих файлов.`);
-  setSyncStatus("Перемещение папки…");
-  for (const item of targets) {
-    const content = await getBlobBase64(item.source.sha);
-    await putBase64File(item.path, content, `Move ${item.source.path} to ${item.path}`);
-  }
-  for (const item of items.slice().reverse()) await deleteRepoFile(item.path, item.sha, `Remove old path ${item.path}`);
-  const mapPath = p => p && (p === oldFolder || p.startsWith(oldFolder + "/")) ? newFolder + p.slice(oldFolder.length) : p;
-  const oldPrimary = state.current, oldSecondary = state.secondary.path;
-  state.current = mapPath(state.current); state.secondary.path = mapPath(state.secondary.path); state.selectedFolder = newFolder;
-  for (const tab of state.tabs) tab.path = mapPath(tab.path);
-  persistTabsWorkspace(); renderTabs();
-  state.expandedFolders = new Set(Array.from(state.expandedFolders).map(mapPath));
+  captureActiveTab();
+  await plannerFlush();
   await loadTree();
-  if (oldPrimary && oldPrimary !== state.current) await openNote(state.current);
-  if (oldSecondary && oldSecondary !== state.secondary.path && els.paneHost.classList.contains("split-active")) await openInSplit(state.secondary.path, state.splitOrientation, false);
+  const entries = folderMoveEntries(state.files, oldFolder, newFolder);
+  const oldFiles = state.files.filter(f => f.path.startsWith(oldFolder + "/"));
+  const mapPath = p => p && p.startsWith(oldFolder + "/") ? newFolder + p.slice(oldFolder.length) : p;
+  const newFiles = entries.filter(e => e.sha).map(e => ({path:e.path,sha:null}));
+  const rewritten = new Map();
+  const expected = [...oldFiles, ...newFiles];
+  for (const note of state.notes) {
+    const item = await plannerFetchFile(note.path);
+    if (!item) throw new Error("Заметки изменились. Обнови vault и повтори переименование.");
+    const text = rewriteVaultLinks(item.text,note.path,state.notes,oldFolder,newFolder);
+    if (text !== item.text) {
+      const path = mapPath(note.path);
+      const index = entries.findIndex(e => e.path === path && e.sha);
+      const entry = {path,text};
+      if (index >= 0) entries[index] = entry; else entries.push(entry);
+      rewritten.set(note.path,{path,text}); expected.push({path:note.path,sha:item.sha});
+    }
+  }
+  setSyncStatus("Переименование папки…");
+  await commitVaultEntries(`Rename folder ${oldFolder} to ${newFolder}`, entries, expected);
+  state.current = mapPath(state.current);
+  state.secondary.path = mapPath(state.secondary.path);
+  state.selectedFolder = newFolder;
+  for (const tab of state.tabs) {
+    const oldPath = tab.path;
+    if (tab.text != null) tab.text = rewriteVaultLinks(tab.text,oldPath,state.notes,oldFolder,newFolder);
+    if (tab.savedText != null) tab.savedText = rewriteVaultLinks(tab.savedText,oldPath,state.notes,oldFolder,newFolder);
+    tab.path = mapPath(oldPath);
+  }
+  state.expandedFolders = new Set(Array.from(state.expandedFolders).map(mapPath));
+  saveExpandedFolders(); remapFolderColors(oldFolder, newFolder);
+  state.planner.path = mapPath(state.planner.path);
+  if (state.planner.data) for (const task of state.planner.data.tasks) task.text = rewriteFolderLinks(task.text,state.planner.path,state.notes,oldFolder,newFolder);
+  taskHub.invalidate();
+  await loadTree();
+  for (const tab of state.tabs) if (!tab.isNew) tab.sha = existingFile(tab.path)?.sha || tab.sha;
+  state.currentSha = existingFile(state.current)?.sha || state.currentSha;
+  state.secondary.sha = existingFile(state.secondary.path)?.sha || state.secondary.sha;
+  state.planner.sha = existingFile(state.planner.path)?.sha || state.planner.sha;
+  if (state.current) { els.pathInput.value = state.current; updatePrimaryPathUI(state.current); }
+  if (activeTab() && rewritten.size) setEditorMarkdown(activeTab().text || "");
+  if (state.secondary.path) { els.secondaryPathInput.value = state.secondary.path; updateSecondaryPathUI(state.secondary.path); }
+  persistTabsWorkspace(); renderTabs();
   setSyncStatus("Готово");
 }
 
@@ -1625,6 +2325,7 @@ async function deleteFolder(path) {
 
     if (state.secondary.path?.startsWith(folder + "/")) closeSplit();
     state.selectedFolder = "";
+    removeFolderColors(folder);
     await loadTree();
 
     if (activeWasRemoved || state.current?.startsWith(folder + "/")) {
@@ -1732,6 +2433,53 @@ function replaceSelection(before, after = before, placeholder = "текст") {
   replaceEditorRange(sel.start, sel.end, insert, selectedTo, selectedFrom, selectedTo);
 }
 
+function requestHighlightColor(pane = "primary") {
+  const sel = pane === "secondary" ? secondarySelection() : currentSelection();
+  state.highlightTargetPane = pane;
+  state.highlightInsertContext = { pane, start: sel.start, end: sel.end, text: sel.text.slice(sel.start, sel.end) };
+  els.highlightColorInput.value = els.highlightColorInput.value || "#ffd84d";
+  try {
+    if (typeof els.highlightColorInput.showPicker === "function") els.highlightColorInput.showPicker();
+    else els.highlightColorInput.click();
+  } catch {
+    els.highlightColorInput.click();
+  }
+}
+
+function applyHighlightColor(color) {
+  const ctx = state.highlightInsertContext;
+  if (!ctx || !/^#[0-9a-fA-F]{6}$/.test(color || "")) return;
+  document.documentElement.style.setProperty("--note-highlight", color);
+  try { localStorage.setItem("pv_highlight_color", color); } catch {}
+  const selected = ctx.text || "выделенный текст";
+  const insert = `=={${color}}${selected}==`;
+  const innerStart = ctx.start + 11;
+  const innerEnd = innerStart + selected.length;
+  if (ctx.pane === "secondary") replaceSecondaryRange(ctx.start, ctx.end, insert, innerEnd, innerStart, innerEnd);
+  else replaceEditorRange(ctx.start, ctx.end, insert, innerEnd, innerStart, innerEnd);
+  state.highlightInsertContext = null;
+}
+
+
+function insertExternalLink(pane = "primary") {
+  const sel = pane === "secondary" ? secondarySelection() : currentSelection();
+  const selected = sel.text.slice(sel.start, sel.end);
+  let url = prompt("Адрес ссылки", "https://");
+  if (!url) return;
+  url = url.trim();
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(url) && !url.startsWith("#") && !url.startsWith("/")) url = `https://${url}`;
+  let label = selected;
+  if (!label) {
+    try { label = new URL(url).hostname.replace(/^www\./, ""); } catch { label = url; }
+    const custom = prompt("Текст ссылки", label);
+    if (custom === null) return;
+    label = custom.trim() || label;
+  }
+  const insert = `[${label}](${url})`;
+  if (pane === "secondary") replaceSecondaryRange(sel.start, sel.end, insert, sel.start + insert.length);
+  else replaceEditorRange(sel.start, sel.end, insert, sel.start + insert.length);
+}
+
 function prefixSelectedLines(prefixer, selectResult = true) {
   const sel = currentSelection();
   const text = sel.text;
@@ -1749,6 +2497,28 @@ function insertAtCursor(text, cursorOffset = text.length) {
   replaceEditorRange(sel.start, sel.end, text, sel.start + cursorOffset);
 }
 
+
+const NOTE_ALIGN_SUFFIX_RE = /\s*<!--\s*note-align:(left|center|right)\s*-->\s*$/i;
+
+function alignedLine(line, align) {
+  const clean = String(line).replace(NOTE_ALIGN_SUFFIX_RE, "").replace(/\s+$/g, "");
+  if (!clean.trim() || align === "left") return clean;
+  return `${clean} <!--note-align:${align}-->`;
+}
+
+function applyLineAlignment(pane, align) {
+  if (!/^(left|center|right)$/.test(align)) return;
+  const sel = pane === "secondary" ? secondarySelection() : currentSelection();
+  const text = sel.text;
+  const lineStart = text.lastIndexOf("\n", Math.max(0, sel.start - 1)) + 1;
+  let lineEnd = text.indexOf("\n", sel.end);
+  if (lineEnd === -1) lineEnd = text.length;
+  const block = text.slice(lineStart, lineEnd);
+  const next = block.split("\n").map(line => alignedLine(line, align)).join("\n");
+  if (pane === "secondary") replaceSecondaryRange(lineStart, lineEnd, next, lineStart + next.length, lineStart, lineStart + next.length);
+  else replaceEditorRange(lineStart, lineEnd, next, lineStart + next.length, lineStart, lineStart + next.length);
+}
+
 function toolbarAction(action) {
   if (action === "undo") {
     if (state.editorMode === "live" && state.editorView) return undo(state.editorView);
@@ -1762,9 +2532,20 @@ function toolbarAction(action) {
   if (action === "italic") return replaceSelection("*", "*", "курсив");
   if (action === "strike") return replaceSelection("~~", "~~", "зачёркнутый текст");
   if (action === "underline") return replaceSelection("<u>", "</u>", "подчёркнутый текст");
-  if (action === "highlight") return replaceSelection("==", "==", "выделенный текст");
-  if (action === "wiki") { insertAtCursor("[[]]", 2); updateWikiSuggestions(); return; }
-  if (action === "link") return replaceSelection("[", "](https://)", "текст ссылки");
+  if (action === "highlight") return requestHighlightColor("primary");
+  if (action === "align-left") return applyLineAlignment("primary", "left");
+  if (action === "align-center") return applyLineAlignment("primary", "center");
+  if (action === "align-right") return applyLineAlignment("primary", "right");
+  if (action === "wiki") {
+    const sel = currentSelection();
+    const selected = sel.text.slice(sel.start, sel.end).trim();
+    const target = selected || prompt("Название заметки", "");
+    if (!target) return;
+    const insert = `[[${target}]]`;
+    replaceEditorRange(sel.start, sel.end, insert, sel.start + insert.length);
+    return;
+  }
+  if (action === "link") return insertExternalLink("primary");
   if (action === "image") return requestImageInsert("primary");
   if (action === "hr") return insertAtCursor("\n---\n");
   if (action === "fullscreen") { document.body.classList.toggle("focus-mode"); return; }
@@ -1927,12 +2708,26 @@ function handleEditorKeydown(e) {
 }
 
 function setMode(mode) {
+  if (state.mode === "notes") captureActiveTab();
   state.mode = mode;
   const graph = mode === "graph";
-  els.notesWorkspace.classList.toggle("hidden", graph);
+  const planner = mode === "planner";
+  const future = mode === "future";
+  if (future || planner || graph) { els.sidebar.classList.remove("open"); els.contextSidebar.classList.remove("open"); }
+  $("futureWorkspace").classList.toggle("hidden", !future);
+  $("futureModeBtn").classList.toggle("active", future);
+  if (future) taskHub.open().catch(e => showToast(e.message));
+  const notes = mode === "notes";
+
+  els.notesWorkspace.classList.toggle("hidden", !notes);
+  els.plannerWorkspace?.classList.toggle("hidden", !planner);
   els.graphWorkspace.classList.toggle("hidden", !graph);
-  els.notesModeBtn.classList.toggle("active", !graph);
+
+  els.notesModeBtn.classList.toggle("active", notes);
+  els.plannerModeBtn?.classList.toggle("active", planner);
   els.graphModeBtn.classList.toggle("active", graph);
+  if (notes && activeTab()?.unloaded) activateTab(state.activeTabId).catch(e => showToast(e.message));
+
   if (graph) {
     els.sidebar.classList.remove("open");
     buildGraph();
@@ -1940,45 +2735,82 @@ function setMode(mode) {
     cancelAnimationFrame(state.graph.ambientFrame);
     state.graph.ambientFrame = null;
   }
+
+  if (planner) {
+    const start = state.planner.weekStart || plannerCurrentWeekStart();
+    plannerOpenWeek(start).catch(err => {
+      console.error("Planner open failed", err);
+      showToast(`Планер: ${err.message}`);
+    });
+  }
 }
 
+
 async function buildGraph(forceReload = false) {
-  if (!window.d3) return showToast("D3 не загрузился — проверь интернет-соединение.");
+  if (state.graph.building) return;
+  captureActiveTab();
+  state.graph.building = true;
+  if (!window.d3) { state.graph.building = false; return showToast("D3 не загрузился — проверь интернет-соединение."); }
   els.graphLoading.classList.remove("hidden");
   try {
-    const existingIds = new Set(state.notes.map(n => n.path.replace(/\.md$/i, "")));
-    const nameToId = new Map(state.notes.map(n => [noteName(n.path).toLowerCase(), n.path.replace(/\.md$/i, "")]));
+    // Always refresh the repository tree before building the graph so every
+    // saved Markdown note is represented, including files created on another device.
+    await loadTree();
+
+    const entries = new Map();
+    for (const note of state.notes) {
+      if (isHiddenTechFolder(note.path) || note.path === "planner/projects.md" || note.path.startsWith("planner/stats/")) continue;
+      entries.set(note.path, { path: note.path, text: null });
+    }
+    for (const tab of state.tabs) {
+      if (!tab.path || !tab.path.toLowerCase().endsWith(".md")) continue;
+      const prev = entries.get(tab.path) || { path: tab.path, text: null };
+      if (!tab.unloaded) prev.text = tab.text ?? prev.text;
+      entries.set(tab.path, prev);
+    }
+
+    const all = Array.from(entries.values());
+
     const nodesMap = new Map();
     const links = [];
 
-    for (const note of state.notes) {
+    for (const note of all) {
       const id = note.path.replace(/\.md$/i, "");
       nodesMap.set(id, { id, path: note.path, label: noteName(note.path), missing: false, degree: 0 });
     }
 
-    for (const note of state.notes) {
-      const source = note.path.replace(/\.md$/i, "");
-      let item;
-      try {
-        item = forceReload ? await fetchFileFresh(note.path) : await getFile(note.path);
-      } catch {
-        continue;
-      }
+    const contents = [];
+    // Limit parallel requests; report failures instead of drawing a false graph with no edges.
+    for (let offset = 0; offset < all.length; offset += 6) {
+      contents.push(...await Promise.all(all.slice(offset, offset + 6).map(async note => {
+        if (note.text != null) return [note.path, note.text];
+        const item = await plannerFetchFile(note.path);
+        if (!item) throw new Error(`Не удалось прочитать ${note.path}. Обнови граф.`);
+        return [note.path, item.text];
+      })));
+    }
+    if (state.secondary.path && state.mode === "graph") {
+      const row = contents.find(n => n[0] === state.secondary.path);
+      if (row && state.secondary.editorView) row[1] = getSecondaryMarkdown();
+    }
+    for (const [path, text] of contents) {
+      const source = path.replace(/\.md$/i, "");
       const seenTargets = new Set();
-      for (const link of extractWikiLinks(item.text)) {
-        const candidate = link.target;
-        const resolved = existingIds.has(candidate) ? candidate : nameToId.get(candidate.toLowerCase());
-        const target = resolved || candidate;
+      for (const linkInfo of noteLinks(text)) {
+        const resolvedPath = resolveNote(linkInfo.target, path, all, linkInfo.relative);
+        const candidate = normalizeWikiTarget(linkInfo.target);
+        if (!resolvedPath && linkInfo.relative && !/\.md(?:#|$)/i.test(linkInfo.target)) continue;
+        const target = resolvedPath ? resolvedPath.replace(/\.md$/i, "") : candidate;
         if (!target || seenTargets.has(target)) continue;
         seenTargets.add(target);
-        if (!nodesMap.has(target)) nodesMap.set(target, { id: target, path: null, label: target.split("/").pop(), missing: true, degree: 0 });
-        links.push({ source, target });
+        if (!nodesMap.has(target)) nodesMap.set(target, { id:target,path:null,label:target.split("/").pop(),missing:true,degree:0 });
+        links.push({source,target});
       }
     }
 
-    for (const link of links) {
-      nodesMap.get(link.source).degree++;
-      nodesMap.get(link.target).degree++;
+    for (const edge of links) {
+      nodesMap.get(edge.source) && nodesMap.get(edge.source).degree++;
+      nodesMap.get(edge.target) && nodesMap.get(edge.target).degree++;
     }
 
     const showMissing = els.showMissingToggle.checked;
@@ -1993,103 +2825,156 @@ async function buildGraph(forceReload = false) {
   } catch (e) {
     showToast(`Граф: ${e.message}`);
   } finally {
+    state.graph.building = false;
     els.graphLoading.classList.add("hidden");
   }
-}
-
-async function fetchFileFresh(path) {
-  const data = await gh(`/repos/${encodeURIComponent(state.owner)}/${encodeURIComponent(state.repo)}/contents/${encodePath(path)}?ref=${encodeURIComponent(state.branch)}`);
-  const item = { text: base64ToUtf8(data.content || ""), sha: data.sha };
-  state.contents.set(path, item);
-  return item;
 }
 
 function renderGraph(nodes, links) {
   const svg = d3.select(els.graphSvg);
   svg.selectAll("*").remove();
   if (state.graph.simulation) state.graph.simulation.stop();
-  if (state.graph.ambientFrame) cancelAnimationFrame(state.graph.ambientFrame);
+  if (state.graph.ambientFrame) {
+    cancelAnimationFrame(state.graph.ambientFrame);
+    state.graph.ambientFrame = null;
+  }
 
   const rect = els.graphSvg.getBoundingClientRect();
-  const width = Math.max(320, rect.width || 900), height = Math.max(320, rect.height || 650);
+  const width = Math.max(320, rect.width || 900);
+  const height = Math.max(320, rect.height || 650);
   svg.attr("viewBox", [0, 0, width, height]);
+
   const root = svg.append("g");
-
-  nodes.forEach((d, i) => { d._phase = (i * 1.618 + (d.id?.length || 1)) % (Math.PI * 2); d._amp = 1.2 + (i % 4) * .45; d._dragMoved = false; });
-
-  const link = root.append("g").selectAll("line").data(links).join("line")
+  const link = root.append("g").attr("class", "graph-links").selectAll("line").data(links).join("line")
     .attr("class", "graph-link")
-    .attr("stroke-width", d => 1 + Math.min(1.3, ((d.source.degree || 0) + (d.target.degree || 0)) / 24));
-  const node = root.append("g").selectAll("g").data(nodes, d => d.id).join("g")
+    .attr("stroke-width", d => 0.9 + Math.min(1.15, (((d.source.degree || 0) + (d.target.degree || 0)) / 28)));
+
+  const node = root.append("g").attr("class", "graph-nodes").selectAll("g").data(nodes, d => d.id).join("g")
     .attr("class", d => `graph-node ${d.missing ? "missing" : ""}`)
     .style("cursor", d => d.missing ? "default" : "grab");
-  node.append("circle").attr("r", d => 5 + Math.min(8, Math.sqrt(d.degree || 0) * 2));
-  node.append("text").attr("x", d => 9 + Math.min(8, Math.sqrt(d.degree || 0) * 2)).attr("y", 4).text(d => d.label);
+
+  node.append("circle").attr("r", d => 5 + Math.min(8, Math.sqrt(d.degree || 0) * 1.8));
+  node.append("text").attr("x", d => 9 + Math.min(8, Math.sqrt(d.degree || 0) * 1.8)).attr("y", 4).text(d => d.label);
+
+  // Stable per-note scatter: organic on first open, consistent on refresh.
+  const linkedIds = new Set(links.flatMap(edge => [
+    typeof edge.source === "string" ? edge.source : edge.source.id,
+    typeof edge.target === "string" ? edge.target : edge.target.id,
+  ]));
+  const spread = Math.min(150, Math.min(width, height) * .22);
+  const radius = Math.min(width, height) * .28;
+  nodes.forEach((d, i) => {
+    d._isolated = !linkedIds.has(d.id);
+    let seed = 2166136261;
+    for (const char of d.id) seed = Math.imul(seed ^ char.codePointAt(0), 16777619);
+    const random = () => {
+      seed = (seed + 0x6D2B79F5) | 0;
+      let value = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      value ^= value + Math.imul(value ^ (value >>> 7), 61 | value);
+      return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+    };
+    d._homeX = width / 2 + (random() + random() - 1) * spread;
+    d._homeY = height / 2 + (random() + random() - 1) * spread;
+    const savedPos = state.graph.positions.get(d.id);
+    if (savedPos && Number.isFinite(savedPos.x) && Number.isFinite(savedPos.y)) {
+      d.x = savedPos.x; d.y = savedPos.y;
+      if (savedPos.fixed) { d.fx = savedPos.x; d.fy = savedPos.y; }
+    } else if (!Number.isFinite(d.x) || !Number.isFinite(d.y)) {
+      if (d._isolated) {
+        d.x = d._homeX; d.y = d._homeY;
+      } else {
+        const angle = (i / Math.max(1, nodes.length)) * Math.PI * 2;
+        d.x = width / 2 + Math.cos(angle) * radius;
+        d.y = height / 2 + Math.sin(angle) * radius;
+      }
+    }
+    d._dragMoved = false;
+  });
 
   const simulation = d3.forceSimulation(nodes)
-    .force("link", d3.forceLink(links).id(d => d.id).distance(d => 78 + Math.min(92, ((d.source.degree || 0) + (d.target.degree || 0)) * 4)).strength(.48))
-    .force("charge", d3.forceManyBody().strength(d => -105 - Math.min(210, (d.degree || 0) * 12)))
+    .force("link", d3.forceLink(links).id(d => d.id).distance(105).strength(.22))
+    .force("charge", d3.forceManyBody().strength(d => d._isolated ? -42 : -105 - Math.min(150, (d.degree || 0) * 8)))
+    .force("scatterX", d3.forceX(d => d._homeX).strength(d => d._isolated ? .085 : 0))
+    .force("scatterY", d3.forceY(d => d._homeY).strength(d => d._isolated ? .085 : 0))
     .force("center", d3.forceCenter(width / 2, height / 2))
-    .force("x", d3.forceX(width / 2).strength(.006))
-    .force("y", d3.forceY(height / 2).strength(.006))
-    .force("collision", d3.forceCollide().radius(d => 27 + Math.min(22, (d.degree || 0) * 2)).strength(.85))
-    .velocityDecay(.34).alphaDecay(.055);
+    .force("collision", d3.forceCollide().radius(d => 24 + Math.min(18, (d.degree || 0) * 1.5)).strength(.86))
+    .velocityDecay(.48)
+    .alphaDecay(.045);
 
-  const visual = (d, t) => {
-    if (d._dragging) return [d.x || 0, d.y || 0];
-    const drift = d._pinned ? .7 : 1;
-    return [(d.x || 0) + Math.sin(t * .00038 + d._phase) * d._amp * drift, (d.y || 0) + Math.cos(t * .00031 + d._phase * 1.27) * d._amp * drift];
+  const draw = () => {
+    link
+      .attr("x1", d => d.source.x)
+      .attr("y1", d => d.source.y)
+      .attr("x2", d => d.target.x)
+      .attr("y2", d => d.target.y);
+    node.attr("transform", d => `translate(${d.x},${d.y})`);
+    for (const d of nodes) if (Number.isFinite(d.x) && Number.isFinite(d.y)) {
+      const prev = state.graph.positions.get(d.id) || {};
+      state.graph.positions.set(d.id, { x: d.x, y: d.y, fixed: prev.fixed || false });
+    }
   };
-  const frame = t => {
-    const positions = new Map();
-    nodes.forEach(d => positions.set(d.id, visual(d, t)));
-    link.attr("x1", d => positions.get(d.source.id || d.source)?.[0] ?? d.source.x)
-        .attr("y1", d => positions.get(d.source.id || d.source)?.[1] ?? d.source.y)
-        .attr("x2", d => positions.get(d.target.id || d.target)?.[0] ?? d.target.x)
-        .attr("y2", d => positions.get(d.target.id || d.target)?.[1] ?? d.target.y);
-    node.attr("transform", d => { const [x,y] = positions.get(d.id) || [d.x,d.y]; return `translate(${x},${y})`; });
-    state.graph.ambientFrame = requestAnimationFrame(frame);
-  };
-  state.graph.ambientFrame = requestAnimationFrame(frame);
+  simulation.on("tick", draw);
+  draw();
 
-  const drag = d3.drag().container(root.node())
+
+  const drag = d3.drag()
+    .container(root.node())
+    .clickDistance(5)
     .on("start", (event, d) => {
-      d._dragging = true; d._dragMoved = false; d._dragStartX = event.x; d._dragStartY = event.y;
+      event.sourceEvent?.stopPropagation?.();
+      d._dragMoved = false;
+      d._dragStartX = event.x;
+      d._dragStartY = event.y;
+      d.fx = d.x;
+      d.fy = d.y;
       if (!event.active) simulation.alphaTarget(.12).restart();
-      d.fx = d.x; d.fy = d.y;
       d3.select(event.sourceEvent?.currentTarget || null).style?.("cursor", "grabbing");
     })
     .on("drag", (event, d) => {
       if (Math.hypot(event.x - d._dragStartX, event.y - d._dragStartY) > 3) d._dragMoved = true;
-      d.fx = event.x; d.fy = event.y; d.x = event.x; d.y = event.y;
+      d.fx = event.x;
+      d.fy = event.y;
+      d.x = event.x;
+      d.y = event.y;
+      draw();
     })
     .on("end", (event, d) => {
-      d._dragging = false; d._pinned = true; d.fx = d.x; d.fy = d.y;
+      d.fx = d.x;
+      d.fy = d.y;
+      state.graph.positions.set(d.id, { x: d.x, y: d.y, fixed: true });
       if (!event.active) simulation.alphaTarget(0);
-      setTimeout(() => { d._dragMoved = false; }, 80);
+      setTimeout(() => { d._dragMoved = false; }, 180);
     });
   node.call(drag);
 
   node.on("click", (event, d) => {
-    event.preventDefault(); event.stopPropagation();
     if (d._dragMoved || !d.path) return;
-    setMode("notes"); openNoteInActivePane(d.path);
+    event.preventDefault();
+    event.stopPropagation();
+    setMode("notes");
+    openNoteInActivePane(d.path);
   });
+
   node.on("dblclick", (event, d) => {
-    event.preventDefault(); event.stopPropagation();
-    d._pinned = false; d.fx = null; d.fy = null; simulation.alpha(.22).restart();
-    showToast("Узел снова свободно участвует в раскладке.");
+    event.preventDefault();
+    event.stopPropagation();
+    d.fx = null;
+    d.fy = null;
+    state.graph.positions.set(d.id, { x: d.x, y: d.y, fixed: false });
+    simulation.alpha(.16).restart();
   });
 
   const zoom = d3.zoom().scaleExtent([0.12, 5]).on("zoom", event => root.attr("transform", event.transform));
   svg.call(zoom).on("dblclick.zoom", null);
 
-  state.graph.simulation = simulation; state.graph.zoom = zoom; state.graph.svg = svg; state.graph.root = root;
-  state.graph.nodeSelection = node; state.graph.linkSelection = link;
-  setTimeout(() => fitGraph(false), 650);
+  state.graph.simulation = simulation;
+  state.graph.zoom = zoom;
+  state.graph.svg = svg;
+  state.graph.root = root;
+  state.graph.nodeSelection = node;
+  state.graph.linkSelection = link;
   applyGraphSearch();
 }
-
 
 function fitGraph(animate = true) {
   const { svg, zoom, root } = state.graph;
@@ -2197,12 +3082,650 @@ function escapeHtml(s) {
 }
 function escapeAttr(s) { return escapeHtml(s); }
 
+
+// -----------------------------------------------------------------------------
+// ============================================================================
+// WEEKLY PLANNER
+// Неделя хранится как обычный Markdown в planner/weeks/. Скрытый служебный
+// комментарий NOTE_PLANNER_STATE содержит структурированные данные интерфейса.
+// Статистика после закрытия недели сохраняется в planner/stats/.
+// ============================================================================
+// -----------------------------------------------------------------------------
+const PLANNER_DAY_NAMES = ["Понедельник","Вторник","Среда","Четверг","Пятница","Суббота","Воскресенье"];
+const PLANNER_DAY_SHORT = ["ПН","ВТ","СР","ЧТ","ПТ","СБ","ВС"];
+const PLANNER_SECTIONS = [
+  { id: "meetings", label: "Встречи" },
+  { id: "general", label: "Общее" },
+  { id: "health", label: "Остальное" },
+];
+const PLANNER_STATE_RE = /<!-- NOTE_PLANNER_STATE:([A-Za-z0-9+/=]+) -->/;
+
+function plannerPad(n) { return String(n).padStart(2, "0"); }
+function plannerYmd(date) {
+  return `${date.getFullYear()}-${plannerPad(date.getMonth()+1)}-${plannerPad(date.getDate())}`;
+}
+function plannerDateFromYmd(value) {
+  const [y,m,d] = String(value).split("-").map(Number);
+  return new Date(y, (m || 1)-1, d || 1, 12, 0, 0, 0);
+}
+function plannerAddDays(value, days) {
+  const d = typeof value === "string" ? plannerDateFromYmd(value) : new Date(value);
+  d.setDate(d.getDate() + days);
+  return plannerYmd(d);
+}
+function plannerCurrentWeekStart(input = new Date()) {
+  const d = new Date(input);
+  d.setHours(12,0,0,0);
+  const offset = (d.getDay() + 6) % 7;
+  d.setDate(d.getDate() - offset);
+  return plannerYmd(d);
+}
+function plannerWeekPath(start) { return `planner/weeks/${start}.md`; }
+function plannerStatsPath(start) { return `planner/stats/${start}.md`; }
+function plannerDayDate(start, day) { return plannerDateFromYmd(plannerAddDays(start, day)); }
+function plannerIsToday(start, day) { return plannerYmd(new Date()) === plannerAddDays(start, day); }
+function plannerFormatDate(date, options = {day:"numeric",month:"short"}) {
+  return new Intl.DateTimeFormat("ru-RU", options).format(date).replace(/\.$/, "");
+}
+function plannerWeekTitle(start) {
+  const a = plannerDateFromYmd(start);
+  const b = plannerDayDate(start, 6);
+  const sameMonth = a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear();
+  if (sameMonth) return `${a.getDate()}–${b.getDate()} ${plannerFormatDate(b,{month:"long"})} ${b.getFullYear()}`;
+  return `${plannerFormatDate(a,{day:"numeric",month:"long"})} – ${plannerFormatDate(b,{day:"numeric",month:"long"})} ${b.getFullYear()}`;
+}
+function plannerTaskId() {
+  return `pt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
+}
+function plannerEmptyData(start) {
+  return { version: 1, weekStart: start, createdAt: new Date().toISOString(), tasks: [] };
+}
+function plannerDuration(minutes) {
+  const n = Number(minutes) || 0;
+  if (!n) return "";
+  const h = Math.floor(n / 60), m = n % 60;
+  if (h && m) return `${h}ч ${m}м`;
+  if (h) return `${h}ч`;
+  return `${m}м`;
+}
+function plannerRepeatLabel(repeat) {
+  return repeat === "daily" ? "ежедневно" : repeat === "weekly" ? "еженедельно" : "";
+}
+function plannerSectionLabel(id) {
+  return PLANNER_SECTIONS.find(x => x.id === id)?.label || "Общее";
+}
+function plannerTaskSort(a,b) {
+  const ta = a.time || "99:99", tb = b.time || "99:99";
+  if (ta !== tb) return ta.localeCompare(tb);
+  return Number(a.order || 0) - Number(b.order || 0);
+}
+function plannerNormalizeData(data, start) {
+  const out = data && typeof data === "object" ? data : plannerEmptyData(start);
+  out.version = 1;
+  out.weekStart = start;
+  out.tasks = Array.isArray(out.tasks) ? out.tasks : [];
+  out.tasks = out.tasks.map((t,i) => ({
+    id: t.id || plannerTaskId(),
+    ...t,
+    recurrenceId: t.recurrenceId || null,
+    day: Math.max(0, Math.min(6, Number(t.day) || 0)),
+    section: ["meetings","general","health"].includes(t.section) ? t.section : "general",
+    text: String(t.text || ""),
+    time: String(t.time || ""),
+    duration: Math.max(0, Number(t.duration) || 0),
+    repeat: ["none","daily","weekly"].includes(t.repeat) ? t.repeat : "none",
+    done: Boolean(t.done),
+    order: Number(t.order) || i + 1,
+  }));
+  return out;
+}
+function plannerSerialize(data) {
+  const lines = [
+    "---",
+    "type: planner-week",
+    `week_start: ${data.weekStart}`,
+    "---",
+    "",
+    `# ${plannerWeekTitle(data.weekStart)}`,
+    "",
+  ];
+  for (let day=0; day<7; day++) {
+    const date = plannerDayDate(data.weekStart, day);
+    lines.push(`## ${PLANNER_DAY_NAMES[day]} · ${plannerFormatDate(date,{day:"numeric",month:"long"})}`, "");
+    for (const section of PLANNER_SECTIONS) {
+      lines.push(`### ${section.label}`, "");
+      const tasks = data.tasks.filter(t => t.day === day && t.section === section.id).sort(plannerTaskSort);
+      if (!tasks.length) {
+        lines.push("_Нет задач_", "");
+        continue;
+      }
+      for (const task of tasks) {
+        const time = task.time ? `${task.time} ` : "";
+        const duration = task.duration ? ` · ⏱ ${plannerDuration(task.duration)}` : "";
+        const repeat = task.repeat !== "none" ? ` · ↻ ${plannerRepeatLabel(task.repeat)}` : "";
+        lines.push(`- [${task.done ? "x" : " "}] ${time}${task.text}${duration}${repeat}`);
+      }
+      lines.push("");
+    }
+  }
+  const encoded = utf8ToBase64(JSON.stringify(data));
+  lines.push(`<!-- NOTE_PLANNER_STATE:${encoded} -->`, "");
+  return lines.join("\n");
+}
+function plannerParse(text, start) {
+  const match = String(text || "").match(PLANNER_STATE_RE);
+  if (match) {
+    try { return plannerNormalizeData(JSON.parse(base64ToUtf8(match[1])), start); }
+    catch (e) { console.warn("Planner state parse failed", e); }
+  }
+  // Safe fallback for a file whose metadata comment was removed.
+  const data = plannerEmptyData(start);
+  let day = 0, section = "general";
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const dayMatch = PLANNER_DAY_NAMES.findIndex(name => line.startsWith(`## ${name}`));
+    if (dayMatch >= 0) { day = dayMatch; continue; }
+    const sectionMatch = PLANNER_SECTIONS.find(x => line.startsWith(`### ${x.label}`)) || (line.startsWith("### Здоровье и активность") ? PLANNER_SECTIONS[2] : line.startsWith("### Встречи и лекции") ? PLANNER_SECTIONS[0] : null);
+    if (sectionMatch) { section = sectionMatch.id; continue; }
+    const task = line.match(/^- \[([ xX])\]\s+(.*)$/);
+    if (task) {
+      data.tasks.push({ id: plannerTaskId(), recurrenceId:null, day, section, text:task[2], time:"", duration:0, repeat:"none", done:/x/i.test(task[1]), order:data.tasks.length+1 });
+    }
+  }
+  return plannerNormalizeData(data, start);
+}
+async function plannerFetchFile(path) {
+  try {
+    const item = await gh(`/repos/${encodeURIComponent(state.owner)}/${encodeURIComponent(state.repo)}/contents/${encodePath(path)}?ref=${encodeURIComponent(state.branch)}`);
+    if (!item || item.type !== "file") return null;
+    return { text: base64ToUtf8(item.content || ""), sha: item.sha };
+  } catch (e) {
+    if (e.status === 404) return null;
+    throw e;
+  }
+}
+function plannerRegisterFile(path, sha, text) {
+  state.contents.set(path, { text, sha });
+  for (const tab of state.tabs.filter(t=>t.path===path)) {
+    if (!tab.dirty && tab.sha !== sha) { tab.sha=sha; tab.text=text; tab.savedText=text; tab.unloaded=true; }
+  }
+  const size = new TextEncoder().encode(text).length;
+  const entry = { path, sha, type:"blob", size };
+  const fi = state.files.findIndex(x => x.path === path);
+  if (fi >= 0) state.files[fi] = { ...state.files[fi], ...entry };
+  else state.files.push(entry);
+  const ni = state.notes.findIndex(x => x.path === path);
+  if (ni >= 0) state.notes[ni] = { ...state.notes[ni], ...entry };
+  else state.notes.push(entry);
+  updateVaultStorage();
+}
+async function plannerSaveNow(showFeedback = false) {
+  const p = state.planner;
+  if (!p.data || !p.path || !p.dirty) return;
+  if (p.savePromise) { await p.savePromise; return plannerSaveNow(showFeedback); }
+  const path = p.path, revision = p.revision || 0;
+  const text = plannerSerialize(p.data);
+  p.savePromise = (async () => {
+    try {
+      setSyncStatus("Планер: сохранение…");
+      const saved = await persistMarkdownFile({path,oldPath:path,currentSha:p.sha,markdownText:text});
+      p.sha = saved.sha;
+      p.dirty = (p.revision || 0) !== revision;
+      plannerRegisterFile(path, saved.sha, text);
+      setSyncStatus("Планер сохранён");
+      if (showFeedback) showToast("Планер сохранён в GitHub.");
+    } catch (e) {
+      p.dirty = true; setSyncStatus("Ошибка планера");
+      throw e;
+    }
+  })();
+  try { await p.savePromise; } finally { p.savePromise = null; }
+  if (p.dirty) return plannerSaveNow(showFeedback);
+}
+async function plannerFlush() {
+  clearTimeout(state.planner.saveTimer);
+  await plannerSaveNow(false);
+}
+
+function plannerScheduleSave() {
+  const p = state.planner;
+  p.dirty = true;
+  p.revision = (p.revision || 0) + 1;
+  setSyncStatus("Планер: изменения…");
+  clearTimeout(p.saveTimer);
+  p.saveTimer = setTimeout(() => plannerSaveNow(false).catch(e => showToast(`Планер не сохранён: ${e.message}. Изменения остаются открыты.`)), 650);
+}
+async function plannerOpenWeek(start) {
+  if (state.planner.opening) return;
+  state.planner.opening = true;
+  try {
+    await plannerFlush();
+    start = plannerCurrentWeekStart(plannerDateFromYmd(start));
+    const path = plannerWeekPath(start);
+    const found = await plannerFetchFile(path);
+    const prepared = found ? await taskHub.ensureWeek(start, plannerParse(found.text, start), found.sha) : null;
+    state.planner.weekStart = start; state.planner.path = path;
+    state.planner.selectedDay = (new Date().getDay() + 6) % 7;
+    state.planner.sha = prepared?.sha || null;
+    state.planner.data = prepared?.data || null;
+    if (found && prepared.sha === found.sha) plannerRegisterFile(path, found.sha, found.text);
+    plannerRender();
+  } finally { state.planner.opening = false; }
+}
+
+function plannerNavigate(start) { return plannerOpenWeek(start).catch(e => showToast(`Не удалось открыть неделю: ${e.message}. Текущие дела сохранены на экране.`)); }
+
+async function plannerPreviousData(targetStart) {
+  const candidates = state.notes
+    .map(n => n.path)
+    .filter(p => /^planner\/weeks\/\d{4}-\d{2}-\d{2}\.md$/.test(p))
+    .map(p => ({ path:p, start:p.match(/(\d{4}-\d{2}-\d{2})\.md$/)?.[1] }))
+    .filter(x => x.start && x.start < targetStart)
+    .sort((a,b) => b.start.localeCompare(a.start));
+  if (!candidates.length) return null;
+  const item = await plannerFetchFile(candidates[0].path);
+  return item ? plannerParse(item.text, candidates[0].start) : null;
+}
+function plannerCloneRecurring(source, targetStart) {
+  const tasks = [];
+  if (!source || source.routinesMigrated) return tasks;
+  const daily = new Map(), weekly = new Map();
+  for (const t of source.tasks) {
+    if (t.repeat === "daily") {
+      const key = t.recurrenceId || `daily|${t.section}|${t.text}|${t.time}|${t.duration}`;
+      if (!daily.has(key)) daily.set(key, t);
+    } else if (t.repeat === "weekly") {
+      const key = t.recurrenceId || `weekly|${t.day}|${t.section}|${t.text}|${t.time}|${t.duration}`;
+      if (!weekly.has(key)) weekly.set(key, t);
+    }
+  }
+  for (const [key,t] of daily) {
+    const recurrenceId = t.recurrenceId || key;
+    for (let day=0; day<7; day++) tasks.push({ ...t, id:plannerTaskId(), recurrenceId, day, done:false, order:Date.now()+tasks.length });
+  }
+  for (const [key,t] of weekly) {
+    tasks.push({ ...t, id:plannerTaskId(), recurrenceId:t.recurrenceId || key, done:false, order:Date.now()+tasks.length });
+  }
+  return tasks;
+}
+async function plannerPrepareWeek(start, carryTasks = [], source = null) {
+  await taskHub.load();
+  const path = plannerWeekPath(start);
+  const found = await plannerFetchFile(path);
+  const data = found ? plannerParse(found.text, start) : plannerEmptyData(start);
+  const additions = plannerCloneRecurring(source, start);
+  for (const t of carryTasks) additions.push({...t,id:plannerTaskId(),originKey:`carry:${source.weekStart}:${t.id}`,recurrenceId:null,repeat:"none",done:false});
+  data.tasks = mergeWeekTasks(data.tasks, [...additions, ...taskHub.tasksForWeek(start)]);
+  return {path,sha:found?.sha || null,data};
+}
+async function plannerCreateWeek(start = state.planner.weekStart) {
+  await plannerFlush();
+  start = start || plannerCurrentWeekStart();
+  const source = await plannerPreviousData(start);
+  const prepared = await plannerPrepareWeek(start, [], source);
+  const text = plannerSerialize(prepared.data);
+  const saved = await persistMarkdownFile({path:prepared.path,oldPath:prepared.path,currentSha:prepared.sha,markdownText:text});
+  plannerRegisterFile(prepared.path,saved.sha,text);
+  await plannerOpenWeek(start);
+}
+
+function plannerOverallStats(data = state.planner.data) {
+  const tasks = data?.tasks || [];
+  const total = tasks.length;
+  const done = tasks.filter(t => t.done).length;
+  const plannedMinutes = tasks.reduce((s,t) => s + (Number(t.duration)||0), 0);
+  const doneMinutes = tasks.filter(t=>t.done).reduce((s,t)=>s+(Number(t.duration)||0),0);
+  return { total, done, pct: total ? Math.round(done / total * 100) : 0, plannedMinutes, doneMinutes };
+}
+function plannerCategoryStats(data = state.planner.data) {
+  const map = {};
+  for (const s of PLANNER_SECTIONS) {
+    const tasks = (data?.tasks || []).filter(t => t.section === s.id);
+    const done = tasks.filter(t => t.done).length;
+    map[s.id] = { label:s.label, total:tasks.length, done, pct:tasks.length ? Math.round(done/tasks.length*100) : 0 };
+  }
+  return map;
+}
+function plannerProjectStats(data = state.planner.data) {
+  const map = new Map();
+  for (const task of data?.tasks || []) {
+    const links = extractWikiLinks(task.text);
+    for (const link of links) {
+      const key = link.target;
+      if (!map.has(key)) map.set(key, { name:key, total:0, done:0, plannedMinutes:0, doneMinutes:0 });
+      const row = map.get(key);
+      row.total++; if (task.done) row.done++;
+      row.plannedMinutes += Number(task.duration)||0;
+      if (task.done) row.doneMinutes += Number(task.duration)||0;
+    }
+  }
+  return Array.from(map.values()).sort((a,b) => (b.total-a.total) || a.name.localeCompare(b.name,"ru"));
+}
+function plannerEscapeRichText(text) {
+  const source = String(text || "");
+  const re = /\[\[([^\]]+)\]\]|\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g;
+  let html = "", pos = 0, m;
+  while ((m = re.exec(source))) {
+    html += escapeHtml(source.slice(pos,m.index));
+    if (m[1] != null) {
+      const raw = m[1].trim();
+      const target = normalizeWikiTarget(raw);
+      const label = raw.includes("|") ? raw.split("|").slice(1).join("|").trim() : raw.split("#")[0];
+      const resolved = wikiTargetToPath(raw);
+      html += `<a href="#" class="planner-wiki-link ${resolved ? "" : "missing"}" data-wiki="${escapeAttr(raw)}">${escapeHtml(label || target)}</a>`;
+    } else {
+      html += `<a class="planner-external-link" href="${escapeAttr(m[3])}" target="_blank" rel="noopener">${escapeHtml(m[2])}</a>`;
+    }
+    pos = re.lastIndex;
+  }
+  return html + escapeHtml(source.slice(pos));
+}
+function plannerTaskMetaHtml(task) {
+  const bits = [];
+  const project = taskHub.projectName(task.projectId);
+  if (project) bits.push(`<span class="planner-pill">${escapeHtml(project)}</span>`);
+  if (task.time) bits.push(`<span class="planner-pill">${escapeHtml(task.time)}</span>`);
+  if (task.duration) bits.push(`<span class="planner-pill">⏱ ${escapeHtml(plannerDuration(task.duration))}</span>`);
+  const repeat = task.hubRepeat || task.repeat;
+  if (repeat !== "none") bits.push(`<span class="planner-pill repeat">↻ ${escapeHtml(plannerRepeatLabel(repeat))}</span>`);
+  return bits.join("");
+}
+function plannerRender() {
+  const start = state.planner.weekStart || plannerCurrentWeekStart();
+  const data = state.planner.data;
+  els.plannerWeekTitle.textContent = plannerWeekTitle(start);
+  const stats = plannerOverallStats(data);
+  els.plannerWeekMeta.textContent = data ? `${stats.done}/${stats.total} выполнено · ${stats.pct}%${stats.plannedMinutes ? ` · ${plannerDuration(stats.plannedMinutes)} запланировано` : ""}` : "Неделя не создана";
+
+  const currentStart = plannerCurrentWeekStart();
+  const sundayNow = new Date().getDay() === 0 && start === currentStart;
+  els.plannerReviewBtn.classList.toggle("review-due", sundayNow);
+  els.plannerReviewBtn.title = sundayNow ? "Воскресный обзор недели" : "Посмотреть статистику недели";
+  els.plannerOpenMarkdownBtn.disabled = !data;
+
+  els.plannerDayStrip.innerHTML = "";
+  for (let day=0; day<7; day++) {
+    const btn = document.createElement("button");
+    btn.className = `planner-day-tab ${day === state.planner.selectedDay ? "active" : ""} ${plannerIsToday(start,day) ? "today" : ""}`;
+    const date = plannerDayDate(start, day);
+    btn.innerHTML = `<strong>${PLANNER_DAY_SHORT[day]}</strong><span>${escapeHtml(plannerFormatDate(date,{day:"numeric",month:"short"}))}</span>`;
+    btn.onclick = () => {
+      state.planner.selectedDay = day;
+      plannerRender();
+      requestAnimationFrame(() => document.querySelector(`.planner-day-card[data-day="${day}"]`)?.scrollIntoView({behavior:"smooth",block:"nearest",inline:"start"}));
+    };
+    els.plannerDayStrip.appendChild(btn);
+  }
+
+  els.plannerEmpty.classList.toggle("hidden", Boolean(data));
+  els.plannerBoard.classList.toggle("hidden", !data);
+  if (!data) { els.plannerBoard.innerHTML = ""; return; }
+
+  els.plannerBoard.innerHTML = "";
+  for (let day=0; day<7; day++) {
+    const card = document.createElement("section");
+    card.className = `planner-day-card ${plannerIsToday(start,day) ? "today" : ""} ${day === state.planner.selectedDay ? "mobile-active" : ""}`;
+    card.dataset.day = String(day);
+    const date = plannerDayDate(start, day);
+    const dayTasks = data.tasks.filter(t => t.day === day);
+    const dayDone = dayTasks.filter(t=>t.done).length;
+    card.innerHTML = `<div class="planner-day-head"><div><strong>${PLANNER_DAY_NAMES[day]}</strong><div class="planner-day-date">${escapeHtml(plannerFormatDate(date,{day:"numeric",month:"long"}))}</div></div><div class="planner-day-progress">${dayDone}/${dayTasks.length}</div></div>`;
+
+    for (const section of PLANNER_SECTIONS) {
+      const sec = document.createElement("div");
+      sec.className = "planner-section";
+      sec.innerHTML = `<div class="planner-section-head"><span class="planner-section-title">${escapeHtml(section.label)}</span><button class="planner-add-task" data-add-day="${day}" data-add-section="${section.id}" title="Добавить задачу">＋</button></div><div class="planner-task-list" data-drop-day="${day}" data-drop-section="${section.id}"></div>`;
+      const list = sec.querySelector(".planner-task-list");
+      const tasks = data.tasks.filter(t => t.day === day && t.section === section.id).sort(plannerTaskSort);
+      for (const task of tasks) {
+        const row = document.createElement("div");
+        row.className = `planner-task ${task.done ? "done" : ""}`;
+        row.draggable = true;
+        row.dataset.taskId = task.id;
+        row.innerHTML = `<input class="planner-task-check" type="checkbox" ${task.done ? "checked" : ""} aria-label="Выполнено"><div class="planner-task-main"><div class="planner-task-text">${plannerEscapeRichText(task.text)}</div><div class="planner-task-meta">${plannerTaskMetaHtml(task)}</div></div><button class="planner-task-menu" title="Редактировать">···</button>`;
+        row.querySelector(".planner-task-check").addEventListener("change", e => {
+          task.done = e.target.checked;
+          plannerRender();
+          plannerScheduleSave();
+        });
+        row.querySelector(".planner-task-text").addEventListener("click", e => {
+          const wiki = e.target.closest(".planner-wiki-link");
+          if (wiki) {
+            e.preventDefault(); e.stopPropagation();
+            const path = wikiTargetToPath(wiki.dataset.wiki);
+            if (path) { setMode("notes"); openNote(path); }
+            else if (confirm(`Создать заметку [[${normalizeWikiTarget(wiki.dataset.wiki)}]]?`)) { setMode("notes"); newNote(`${normalizeWikiTarget(wiki.dataset.wiki)}.md`); }
+            return;
+          }
+          if (e.target.closest("a")) return;
+          plannerOpenTaskModal(day, section.id, task.id);
+        });
+        row.querySelector(".planner-task-menu").onclick = () => plannerOpenTaskModal(day, section.id, task.id);
+        row.addEventListener("dragstart", e => {
+          e.dataTransfer.setData("text/note-planner-task", task.id);
+          e.dataTransfer.effectAllowed = "move";
+          row.classList.add("dragging");
+        });
+        row.addEventListener("dragend", () => row.classList.remove("dragging"));
+        list.appendChild(row);
+      }
+      list.addEventListener("dragover", e => {
+        if (Array.from(e.dataTransfer.types || []).includes("text/note-planner-task")) { e.preventDefault(); list.classList.add("drag-over"); e.dataTransfer.dropEffect = "move"; }
+      });
+      list.addEventListener("dragleave", () => list.classList.remove("drag-over"));
+      list.addEventListener("drop", e => {
+        e.preventDefault(); list.classList.remove("drag-over");
+        const id = e.dataTransfer.getData("text/note-planner-task");
+        const task = data.tasks.find(t => t.id === id);
+        if (!task) return;
+        task.day = day; task.section = section.id; task.order = Date.now();
+        plannerRender(); plannerScheduleSave();
+      });
+      sec.querySelector(".planner-add-task").onclick = () => plannerOpenTaskModal(day, section.id);
+      card.appendChild(sec);
+    }
+    els.plannerBoard.appendChild(card);
+  }
+}
+function plannerPopulateNoteSelect() {
+  els.plannerLinkSelect.innerHTML = `<option value="">Ссылка на заметку…</option>`;
+  for (const note of state.notes.filter(n => !n.path.startsWith("planner/")).slice().sort((a,b)=>noteName(a.path).localeCompare(noteName(b.path),"ru"))) {
+    const opt = document.createElement("option");
+    opt.value = note.path.replace(/\.md$/i,"");
+    opt.textContent = `${noteName(note.path)} — ${note.path}`;
+    els.plannerLinkSelect.appendChild(opt);
+  }
+}
+async function plannerOpenTaskModal(day = 0, section = "general", taskId = null) {
+  if (!state.planner.data) return;
+  try { await taskHub.load(); } catch (e) { return showToast(e.message); }
+  state.planner.editTaskId = taskId;
+  const task = taskId ? state.planner.data.tasks.find(t => t.id === taskId) : null;
+  els.plannerTaskModalTitle.textContent = task ? "Редактировать задачу" : "Новая задача";
+  els.plannerTaskDay.innerHTML = "";
+  for (let i=0;i<7;i++) {
+    const opt=document.createElement("option"); opt.value=String(i); opt.textContent=PLANNER_DAY_NAMES[i]; els.plannerTaskDay.appendChild(opt);
+  }
+  els.plannerTaskDay.value = String(task?.day ?? day);
+  els.plannerTaskSection.value = task?.section || section;
+  els.plannerTaskText.value = task?.text || "";
+  els.plannerTaskTime.value = task?.time || "";
+  els.plannerTaskDuration.value = task?.duration || "";
+  els.plannerTaskRepeat.value = task?.repeat || "none";
+  taskHub.populateProjects($("plannerTaskProject"), task?.projectId || "");
+  els.plannerDeleteTaskBtn.classList.toggle("hidden", !task);
+  plannerPopulateNoteSelect();
+  els.plannerTaskModal.classList.remove("hidden");
+  setTimeout(() => els.plannerTaskText.focus(), 0);
+}
+function plannerCloseTaskModal() {
+  els.plannerTaskModal.classList.add("hidden");
+  state.planner.editTaskId = null;
+}
+function plannerSaveTaskFromModal() {
+  const data = state.planner.data;
+  if (!data) return;
+  const text = els.plannerTaskText.value.trim();
+  if (!text) return showToast("Напиши текст задачи.");
+  const values = {
+    day:Number(els.plannerTaskDay.value)||0,
+    section:els.plannerTaskSection.value,
+    text,
+    time:els.plannerTaskTime.value || "",
+    duration:Math.max(0,Number(els.plannerTaskDuration.value)||0),
+    repeat:els.plannerTaskRepeat.value,
+    projectId:$("plannerTaskProject").value,
+  };
+  const existing = state.planner.editTaskId ? data.tasks.find(t => t.id === state.planner.editTaskId) : null;
+
+  if (existing) {
+    const oldRepeat = existing.repeat;
+    const recurrenceId = existing.recurrenceId || plannerTaskId();
+    if (oldRepeat === "daily" && values.repeat === "daily") {
+      for (const task of data.tasks.filter(t => t.recurrenceId === existing.recurrenceId || t.id === existing.id)) {
+        task.text=values.text; task.section=values.section; task.projectId=values.projectId; task.time=values.time; task.duration=values.duration; task.repeat="daily"; task.recurrenceId=recurrenceId;
+      }
+    } else if (values.repeat === "daily") {
+      data.tasks = data.tasks.filter(t => !(existing.recurrenceId && t.recurrenceId === existing.recurrenceId) && t.id !== existing.id);
+      for (let day=0;day<7;day++) data.tasks.push({ id:plannerTaskId(),recurrenceId,...values,day,repeat:"daily",done:day===values.day?existing.done:false,order:Date.now()+day });
+    } else {
+      if (oldRepeat === "daily" && existing.recurrenceId) data.tasks = data.tasks.filter(t => t.recurrenceId !== existing.recurrenceId || t.id === existing.id);
+      Object.assign(existing, values, { recurrenceId: values.repeat === "weekly" ? recurrenceId : null, order:existing.order || Date.now() });
+    }
+  } else if (values.repeat === "daily") {
+    const recurrenceId = plannerTaskId();
+    for (let day=0;day<7;day++) data.tasks.push({ id:plannerTaskId(),recurrenceId,...values,day,repeat:"daily",done:false,order:Date.now()+day });
+  } else {
+    data.tasks.push({ id:plannerTaskId(),recurrenceId:values.repeat==="weekly"?plannerTaskId():null,...values,done:false,order:Date.now() });
+  }
+  plannerCloseTaskModal(); plannerRender(); plannerScheduleSave();
+}
+function plannerDeleteCurrentTask() {
+  const id = state.planner.editTaskId;
+  if (!id || !state.planner.data) return;
+  const task = state.planner.data.tasks.find(t=>t.id===id);
+  if (!task) return;
+  const series = task.repeat === "daily" && task.recurrenceId;
+  const allSeries = series && confirm("Удалить ежедневную задачу со всех дней этой недели?\nOK — удалить всю серию. Отмена — удалить только это появление.");
+  const removed = state.planner.data.tasks.filter(t => allSeries ? t.recurrenceId === task.recurrenceId : t.id === id);
+  state.planner.data.suppressedOrigins = [...new Set([...(state.planner.data.suppressedOrigins || []),...removed.map(t=>t.originKey).filter(Boolean)])];
+  state.planner.data.tasks = state.planner.data.tasks.filter(t => allSeries ? t.recurrenceId !== task.recurrenceId : t.id !== id);
+  plannerCloseTaskModal(); plannerRender(); plannerScheduleSave();
+}
+function plannerInsertSelectedLink() {
+  const target = els.plannerLinkSelect.value;
+  if (!target) return;
+  const input = els.plannerTaskText;
+  const insert = `[[${target}]]`;
+  const start=input.selectionStart ?? input.value.length, end=input.selectionEnd ?? start;
+  input.setRangeText(insert,start,end,"end"); input.focus();
+}
+function plannerComputeReview(data = state.planner.data) {
+  return { overall:plannerOverallStats(data), categories:plannerCategoryStats(data), projects:plannerProjectStats(data), carry:(data?.tasks||[]).filter(t=>!t.done && t.repeat==="none" && !(t.hubTaskId && t.hubRepeat && t.hubRepeat !== "none")) };
+}
+function plannerOpenReview() {
+  if (!state.planner.data) return showToast("Сначала создай неделю.");
+  const review = plannerComputeReview();
+  const o = review.overall;
+  els.plannerReviewSubtitle.textContent = plannerWeekTitle(state.planner.weekStart);
+  let html = `<div class="planner-review-grid">
+    <div class="planner-stat-card"><span class="muted small">Прогресс</span><strong>${o.pct}%</strong><div class="planner-progressbar"><span style="width:${o.pct}%"></span></div></div>
+    <div class="planner-stat-card"><span class="muted small">Задачи</span><strong>${o.done} / ${o.total}</strong></div>
+    <div class="planner-stat-card"><span class="muted small">Время</span><strong>${escapeHtml(plannerDuration(o.doneMinutes) || "0м")} / ${escapeHtml(plannerDuration(o.plannedMinutes) || "0м")}</strong></div>
+  </div>`;
+  html += `<div class="planner-review-section"><h3>По разделам</h3><div class="planner-category-stats">`;
+  for (const s of PLANNER_SECTIONS) {
+    const c = review.categories[s.id];
+    html += `<div class="planner-category-row"><span>${escapeHtml(c.label)}</span><div class="planner-progressbar"><span style="width:${c.pct}%"></span></div><span>${c.done}/${c.total}</span></div>`;
+  }
+  html += `</div></div>`;
+  html += `<div class="planner-review-section"><h3>Связанные заметки / проекты</h3>`;
+  if (!review.projects.length) html += `<div class="muted small">В задачах пока нет [[ссылок]] на заметки.</div>`;
+  else for (const p of review.projects) {
+    const pct = p.total ? Math.round(p.done/p.total*100) : 0;
+    html += `<div class="planner-project-row"><span><a href="#" class="planner-wiki-link" data-review-wiki="${escapeAttr(p.name)}">${escapeHtml(p.name)}</a><div class="planner-progressbar"><span style="width:${pct}%"></span></div></span><span>${p.done}/${p.total} · ${pct}%</span></div>`;
+  }
+  html += `</div>`;
+  html += `<div class="planner-review-section"><h3>Перенести на следующую неделю</h3>`;
+  if (!review.carry.length) html += `<div class="planner-review-note">Все уникальные задачи завершены. Повторяющиеся задачи появятся на следующей неделе автоматически.</div>`;
+  else {
+    html += `<div class="planner-review-note">Отметь незавершённые уникальные задачи, которые нужно перенести. Ежедневные и еженедельные задачи переносятся автоматически.</div>`;
+    for (const t of review.carry) html += `<label class="planner-carry-row"><input class="planner-carry-check" data-task-id="${escapeAttr(t.id)}" type="checkbox"><span>${escapeHtml(t.text)}</span><span>${PLANNER_DAY_SHORT[t.day]}</span></label>`;
+  }
+  html += `</div>`;
+  els.plannerReviewContent.innerHTML = html;
+  els.plannerReviewModal.classList.remove("hidden");
+  els.plannerReviewContent.querySelectorAll("[data-review-wiki]").forEach(a => a.onclick = e => {
+    e.preventDefault();
+    const path = wikiTargetToPath(a.dataset.reviewWiki);
+    if (path) { plannerCloseReview(); setMode("notes"); openNote(path); }
+  });
+}
+function plannerCloseReview() { els.plannerReviewModal.classList.add("hidden"); }
+function plannerStatsMarkdown(data, review) {
+  const o=review.overall;
+  const lines=[`# Итоги · ${plannerWeekTitle(data.weekStart)}`,"",`Выполнено: **${o.done} / ${o.total}** (${o.pct}%)`,`Запланировано времени: **${plannerDuration(o.plannedMinutes)||"0м"}**`,`Выполнено времени: **${plannerDuration(o.doneMinutes)||"0м"}**`,"","## Разделы",""];
+  for (const s of PLANNER_SECTIONS) { const c=review.categories[s.id]; lines.push(`- ${s.label}: ${c.done} / ${c.total} (${c.pct}%)`); }
+  lines.push("","## Связанные заметки / проекты","");
+  if (!review.projects.length) lines.push("_Нет связанных заметок_");
+  else for (const p of review.projects) { const pct=p.total?Math.round(p.done/p.total*100):0; lines.push(`- [[${p.name}]]: ${p.done} / ${p.total} (${pct}%)`); }
+  return lines.join("\n")+"\n";
+}
+async function plannerFinalizeWeek() {
+  if (state.planner.finalizing) return;
+  state.planner.finalizing = true;
+  els.plannerFinalizeWeekBtn.disabled = true;
+  try {
+    await plannerFlush();
+    const data = state.planner.data;
+    if (!data) return;
+    const review = plannerComputeReview(data);
+    const ids = new Set(Array.from(els.plannerReviewContent.querySelectorAll(".planner-carry-check:checked")).map(x => x.dataset.taskId));
+    const carry = review.carry.filter(t => ids.has(t.id));
+    const next = plannerAddDays(data.weekStart, 7);
+    const prepared = await plannerPrepareWeek(next, carry, data);
+    const statsPath = plannerStatsPath(data.weekStart);
+    const stats = await plannerFetchFile(statsPath);
+    const closed = {...data,closedAt:new Date().toISOString(),nextWeek:next,carriedTaskIds:[...ids]};
+    const entries = [
+      {path:state.planner.path,text:plannerSerialize(closed)},
+      {path:statsPath,text:plannerStatsMarkdown(data, review)},
+      {path:prepared.path,text:plannerSerialize(prepared.data)},
+    ];
+    const saved = await commitVaultEntries(`Close planner week ${data.weekStart}`, entries, [
+      {path:state.planner.path,sha:state.planner.sha}, {path:statsPath,sha:stats?.sha || null}, {path:prepared.path,sha:prepared.sha},
+    ]);
+    for (const entry of entries) plannerRegisterFile(entry.path,saved.find(x => x.path === entry.path).sha,entry.text);
+    state.planner.data = closed;
+    state.planner.sha = saved.find(x => x.path === state.planner.path).sha;
+    plannerCloseReview(); await plannerOpenWeek(next);
+    showToast("Неделя закрыта. Выбранные и повторяющиеся дела сохранены в следующей неделе.");
+  } catch (e) { showToast(`Не удалось закрыть неделю: ${e.message}. Повтори после проверки соединения.`); }
+  finally { state.planner.finalizing = false; els.plannerFinalizeWeekBtn.disabled = false; }
+}
+
+async function plannerOpenMarkdown() {
+  if (!state.planner.data || !state.planner.path) return;
+  await plannerFlush();
+  setMode("notes");
+  await openNote(state.planner.path);
+}
+
+
 function logout() {
   sessionStorage.removeItem("pv_owner");
   sessionStorage.removeItem("pv_repo");
   sessionStorage.removeItem("pv_token");
   location.reload();
 }
+
+const taskHub = createTaskHub({
+  state, $, showToast, escapeHtml, plannerFetchFile, plannerRegisterFile, plannerParse,
+  plannerSerialize, plannerEmptyData, plannerTaskId, plannerFlush, commitVaultEntries,
+  plannerCurrentWeekStart, plannerDateFromYmd, plannerRender,
+});
+window.addEventListener("beforeunload", e => {
+  if (state.planner.dirty || state.planner.savePromise || taskHub.busy) { e.preventDefault(); e.returnValue = ""; }
+});
 
 els.connectBtn.onclick = connect;
 els.searchInput.oninput = e => renderFileList(e.target.value);
@@ -2216,6 +3739,8 @@ els.newFolderBtn.onclick = () => createFolder();
 els.logoutBtn.onclick = logout;
 els.vaultImport.onchange = e => importVault(e.target.files);
 els.imageInput.onchange = e => uploadImageForPane(e.target.files?.[0], state.imageTargetPane);
+els.highlightColorInput.onchange = e => applyHighlightColor(e.target.value);
+els.folderColorInput.onchange = e => applyFolderColor(e.target.value);
 els.menuBtn.onclick = toggleSidebar;
 els.searchRibbonBtn.onclick = () => {
   setMode("notes");
@@ -2229,6 +3754,25 @@ els.notesModeBtn.onclick = () => {
   if (window.matchMedia("(max-width: 980px)").matches) els.sidebar.classList.add("open");
 };
 els.graphModeBtn.onclick = () => setMode("graph");
+els.plannerModeBtn.onclick = () => setMode("planner");
+$("futureModeBtn").onclick = () => setMode("future");
+els.plannerPrevWeekBtn.onclick = () => plannerNavigate(plannerAddDays(state.planner.weekStart || plannerCurrentWeekStart(), -7));
+els.plannerNextWeekBtn.onclick = () => plannerNavigate(plannerAddDays(state.planner.weekStart || plannerCurrentWeekStart(), 7));
+els.plannerTodayBtn.onclick = () => plannerNavigate(plannerCurrentWeekStart());
+els.plannerCreateWeekBtn.onclick = () => plannerCreateWeek(state.planner.weekStart || plannerCurrentWeekStart()).catch(e => showToast(e.message));
+els.plannerReviewBtn.onclick = plannerOpenReview;
+els.plannerOpenMarkdownBtn.onclick = () => plannerOpenMarkdown().catch(e => showToast(e.message));
+els.plannerTaskSaveBtn.onclick = plannerSaveTaskFromModal;
+els.plannerTaskCancelBtn.onclick = plannerCloseTaskModal;
+els.plannerTaskCloseBtn.onclick = plannerCloseTaskModal;
+els.plannerDeleteTaskBtn.onclick = plannerDeleteCurrentTask;
+els.plannerInsertLinkBtn.onclick = plannerInsertSelectedLink;
+els.plannerReviewCloseBtn.onclick = plannerCloseReview;
+els.plannerReviewCloseOnlyBtn.onclick = plannerCloseReview;
+els.plannerFinalizeWeekBtn.onclick = plannerFinalizeWeek;
+els.plannerTaskModal.addEventListener("click", e => { if (e.target === els.plannerTaskModal) plannerCloseTaskModal(); });
+els.plannerReviewModal.addEventListener("click", e => { if (e.target === els.plannerReviewModal) plannerCloseReview(); });
+
 els.graphRefreshBtn.onclick = () => buildGraph(true);
 els.graphFitBtn.onclick = () => fitGraph();
 els.graphSearch.oninput = applyGraphSearch;
@@ -2341,7 +3885,11 @@ els.editorText.addEventListener("click", scheduleWikiSuggestions);
 els.editorText.addEventListener("blur", () => setTimeout(() => hideWikiSuggestions(), 150));
 
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape") closeFloatingMenu();
+  if (e.key === "Escape") {
+    closeFloatingMenu();
+    if (!els.plannerTaskModal.classList.contains("hidden")) plannerCloseTaskModal();
+    if (!els.plannerReviewModal.classList.contains("hidden")) plannerCloseReview();
+  }
   if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.code === "KeyN") { e.preventDefault(); newNote(); return; }
   if ((e.ctrlKey || e.metaKey) && !e.altKey && e.shiftKey && e.code === "KeyN") { e.preventDefault(); createFolder(); return; }
   // One-time Obsidian vault import. Intentionally hidden from the permanent UI.
@@ -2372,3 +3920,6 @@ window.addEventListener("resize", () => {
     connect();
   }
 })();
+
+console.info("luna ready");
+
