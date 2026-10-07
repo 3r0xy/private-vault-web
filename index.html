@@ -12,7 +12,7 @@
   <link rel="manifest" href="./manifest.webmanifest?v=luna-1" />
 </head>
 <body>
-  <!-- note v1.5: основной интерфейс. Планер встроен в тот же workspace, что редактор и граф. -->
+  <!-- luna: основной интерфейс. Планер встроен в тот же workspace, что редактор и граф. -->
   <div id="loginView" class="screen center">
     <div class="card login-card">
       <div class="login-mark"><img src="./icons/note-cat-192.png" alt="" width="72" height="72" /></div>
@@ -350,12 +350,12 @@
     <input id="vaultImport" type="file" webkitdirectory directory multiple hidden />
     <input id="imageInput" type="file" accept="image/*" hidden />
     <input id="highlightColorInput" class="color-picker-proxy" type="color" value="#ffd84d" tabindex="-1" aria-hidden="true" />
-    <input id="folderColorInput" class="color-picker-proxy" type="color" value="#8b5cf6" tabindex="-1" aria-hidden="true" />
+    <input id="folderColorInput" class="color-picker-proxy" type="color" value="#f5bdd0" tabindex="-1" aria-hidden="true" />
     <div id="toast" class="toast hidden"></div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
-  <script type="module" src="./app-v1.7.js?v=luna-1"></script>
+  <script type="module" src="./app.js?v=luna-2"></script>
 </body>
 </html>
 
