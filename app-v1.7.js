@@ -737,7 +737,7 @@ async function connect() {
     sessionStorage.setItem("pv_repo", state.repo);
     sessionStorage.setItem("pv_token", state.token);
 
-    els.vaultTitle.textContent = "note";
+    els.vaultTitle.textContent = "luna";
     els.branchStatus.textContent = state.branch;
     loadFolderColors();
     state._expandedLoaded = false;
@@ -2856,24 +2856,46 @@ function renderGraph(nodes, links) {
   node.append("circle").attr("r", d => 5 + Math.min(8, Math.sqrt(d.degree || 0) * 1.8));
   node.append("text").attr("x", d => 9 + Math.min(8, Math.sqrt(d.degree || 0) * 1.8)).attr("y", 4).text(d => d.label);
 
-  // Deterministic initial positions avoid the first-frame jump.
-  const radius = Math.min(width, height) * 0.28;
+  // Stable per-note scatter: organic on first open, consistent on refresh.
+  const linkedIds = new Set(links.flatMap(edge => [
+    typeof edge.source === "string" ? edge.source : edge.source.id,
+    typeof edge.target === "string" ? edge.target : edge.target.id,
+  ]));
+  const spread = Math.min(150, Math.min(width, height) * .22);
+  const radius = Math.min(width, height) * .28;
   nodes.forEach((d, i) => {
+    d._isolated = !linkedIds.has(d.id);
+    let seed = 2166136261;
+    for (const char of d.id) seed = Math.imul(seed ^ char.codePointAt(0), 16777619);
+    const random = () => {
+      seed = (seed + 0x6D2B79F5) | 0;
+      let value = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      value ^= value + Math.imul(value ^ (value >>> 7), 61 | value);
+      return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+    };
+    d._homeX = width / 2 + (random() + random() - 1) * spread;
+    d._homeY = height / 2 + (random() + random() - 1) * spread;
     const savedPos = state.graph.positions.get(d.id);
     if (savedPos && Number.isFinite(savedPos.x) && Number.isFinite(savedPos.y)) {
       d.x = savedPos.x; d.y = savedPos.y;
       if (savedPos.fixed) { d.fx = savedPos.x; d.fy = savedPos.y; }
     } else if (!Number.isFinite(d.x) || !Number.isFinite(d.y)) {
-      const a = (i / Math.max(1, nodes.length)) * Math.PI * 2;
-      d.x = width / 2 + Math.cos(a) * radius;
-      d.y = height / 2 + Math.sin(a) * radius;
+      if (d._isolated) {
+        d.x = d._homeX; d.y = d._homeY;
+      } else {
+        const angle = (i / Math.max(1, nodes.length)) * Math.PI * 2;
+        d.x = width / 2 + Math.cos(angle) * radius;
+        d.y = height / 2 + Math.sin(angle) * radius;
+      }
     }
     d._dragMoved = false;
   });
 
   const simulation = d3.forceSimulation(nodes)
     .force("link", d3.forceLink(links).id(d => d.id).distance(105).strength(.22))
-    .force("charge", d3.forceManyBody().strength(d => -105 - Math.min(150, (d.degree || 0) * 8)))
+    .force("charge", d3.forceManyBody().strength(d => d._isolated ? -42 : -105 - Math.min(150, (d.degree || 0) * 8)))
+    .force("scatterX", d3.forceX(d => d._homeX).strength(d => d._isolated ? .085 : 0))
+    .force("scatterY", d3.forceY(d => d._homeY).strength(d => d._isolated ? .085 : 0))
     .force("center", d3.forceCenter(width / 2, height / 2))
     .force("collision", d3.forceCollide().radius(d => 24 + Math.min(18, (d.degree || 0) * 1.5)).strength(.86))
     .velocityDecay(.48)
