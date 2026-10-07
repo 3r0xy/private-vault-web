@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="color-scheme" content="light dark" />
   <title>note</title>
-  <link rel="stylesheet" href="./styles.css?v=1.5" />
+  <link rel="stylesheet" href="./styles.css?v=1.7" />
 </head>
 <body>
   <!-- note v1.5: основной интерфейс. Планер встроен в тот же workspace, что редактор и граф. -->
@@ -38,6 +38,9 @@
         </button>
         <button id="plannerModeBtn" class="ribbon-btn" title="Планер недели" aria-label="Планер">
           <svg viewBox="0 0 24 24"><path d="M5 4h14a1 1 0 0 1 1 1v15H4V5a1 1 0 0 1 1-1z"/><path d="M8 2v4M16 2v4M4 9h16"/><path d="M8 13h2M12 13h2M16 13h1M8 17h2M12 17h2"/></svg>
+        </button>
+        <button id="futureModeBtn" class="ribbon-btn" title="Будущие дела и проекты" aria-label="Будущие дела и проекты">
+          <svg viewBox="0 0 24 24"><path d="M4 4h16v16H4zM8 8h8M8 12h8M8 16h5"/></svg>
         </button>
         <button id="graphModeBtn" class="ribbon-btn" title="Граф связей" aria-label="Граф">
           <svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="m8 7 8-1M7 9l4 7m6-8-4 8"/></svg>
@@ -235,6 +238,19 @@
         <div id="plannerBoard" class="planner-board" aria-label="Недельный план"></div>
       </section>
 
+      <section id="futureWorkspace" class="hub-workspace hidden">
+        <aside class="hub-sidebar">
+          <div class="hub-sidebar-head"><strong>Проекты</strong><button id="hubNewProjectBtn" class="icon-mini" title="Новый проект" aria-label="Новый проект">＋</button></div>
+          <div id="hubProjects" class="hub-projects"></div>
+          <p class="muted small hub-sidebar-note">Дела без даты остаются здесь. Задачи с датой появляются в соответствующей неделе.</p>
+        </aside>
+        <div class="hub-content">
+          <div class="hub-toolbar"><div><h2 id="hubHeading">Все дела</h2><p class="muted small">Будущие события, подготовка и долгосрочные проекты</p></div><div class="hub-toolbar-actions"><button id="hubRefreshBtn" class="mini-btn">Обновить</button><button id="hubAddBtn" class="primary-action">＋ Добавить дело</button></div></div>
+          <div class="hub-filters"><input id="hubSearch" placeholder="Найти дело…" aria-label="Поиск дел"><label class="small"><input id="hubShowDone" type="checkbox"> Показать выполненные</label></div>
+          <div id="hubList" class="hub-list"></div>
+        </div>
+      </section>
+
       <section id="graphWorkspace" class="graph-workspace hidden">
         <div class="graph-toolbar">
           <div class="graph-title"><strong>Граф связей</strong><span id="graphStats" class="muted small"></span></div>
@@ -271,6 +287,33 @@
       <div class="status-right"><span id="syncStatus">Готово</span><span id="statusWords">Слов: 0</span><span id="statusChars">Символов: 0</span></div>
     </footer>
 
+    <div id="hubModal" class="planner-modal hidden" role="dialog" aria-modal="true" aria-labelledby="hubModalTitle">
+      <div class="planner-dialog hub-dialog">
+        <div class="planner-dialog-head"><strong id="hubModalTitle">Новое дело</strong><button id="hubCloseBtn" class="icon-mini" aria-label="Закрыть">×</button></div>
+        <label class="planner-field"><span>Название</span><textarea id="hubText" rows="2" placeholder="Например: Конференция по медиа"></textarea></label>
+        <div class="planner-form-grid">
+          <label class="planner-field"><span>Тип</span><select id="hubKind"><option value="task">Задача</option><option value="event">Событие с подготовкой</option></select></label>
+          <label class="planner-field"><span>Проект</span><select id="hubProject"></select></label>
+          <label class="planner-field"><span>Дата (можно оставить пустой)</span><input id="hubDate" type="date"></label>
+          <label class="planner-field"><span>Время</span><input id="hubTime" type="time"></label>
+          <label class="planner-field"><span>Длительность, минут</span><input id="hubDuration" type="number" min="0" step="5"></label>
+          <label class="planner-field"><span>Категория</span><select id="hubSection"><option value="meetings">Встречи</option><option value="general" selected>Общее</option><option value="health">Остальное</option></select></label>
+          <label class="planner-field planner-field-wide"><span>Повторять начиная с указанной даты</span><select id="hubRepeat"><option value="none">Не повторять</option><option value="daily">Каждый день</option><option value="weekly">Каждую неделю</option></select></label>
+        </div>
+        <section id="hubPreparation" class="hub-preparation hidden">
+          <h3>Подготовка к событию</h3>
+          <p class="muted small">Сколько времени тебе нужно? Если пока неизвестно, оставь поля пустыми — дело получит пометку «уточнить».</p>
+          <div class="planner-form-grid"><label class="planner-field"><span>За сколько дней начать</span><input id="hubPrepDays" type="number" min="1" step="1"></label><label class="planner-field"><span>Всего часов подготовки</span><input id="hubPrepHours" type="number" min="0.25" step="0.25"></label></div>
+          <label class="planner-field"><span>Шаги подготовки — каждый с новой строки</span><textarea id="hubSteps" rows="3" placeholder="Подготовить заявку
+Собрать материалы
+Проверить презентацию"></textarea></label>
+          <label class="hub-build-prep"><input id="hubBuildPrep" type="checkbox"> Создать задачи подготовки и распределить время до события</label>
+          <p class="muted small">После создания каждый шаг можно отдельно редактировать в проекте. Подготовка распределяется равномерно по указанному сроку.</p>
+        </section>
+        <div class="planner-dialog-actions"><button id="hubDeleteBtn" class="mini-btn danger-text hidden">Удалить</button><span class="planner-dialog-spacer"></span><button id="hubCancelBtn" class="mini-btn">Отмена</button><button id="hubSaveBtn" class="primary-action">Сохранить</button></div>
+      </div>
+    </div>
+
     <div id="plannerTaskModal" class="planner-modal hidden" role="dialog" aria-modal="true" aria-labelledby="plannerTaskModalTitle">
       <div class="planner-dialog planner-task-dialog">
         <div class="planner-dialog-head">
@@ -280,9 +323,10 @@
         <label class="planner-field planner-field-wide"><span>Задача</span><textarea id="plannerTaskText" rows="3" placeholder="Например: Подготовить [[Лекция по GLSL]]"></textarea></label>
         <div class="planner-form-grid">
           <label class="planner-field"><span>День</span><select id="plannerTaskDay"></select></label>
-          <label class="planner-field"><span>Раздел</span><select id="plannerTaskSection"><option value="meetings">Встречи и лекции</option><option value="general">Общее</option><option value="health">Здоровье и активность</option></select></label>
+          <label class="planner-field"><span>Раздел</span><select id="plannerTaskSection"><option value="meetings">Встречи</option><option value="general">Общее</option><option value="health">Остальное</option></select></label>
           <label class="planner-field"><span>Начало</span><input id="plannerTaskTime" type="time" /></label>
           <label class="planner-field"><span>Длительность, мин</span><input id="plannerTaskDuration" type="number" min="0" step="5" placeholder="необязательно" /></label>
+          <label class="planner-field planner-field-wide"><span>Проект</span><select id="plannerTaskProject"><option value="">Без проекта</option></select></label>
           <label class="planner-field planner-field-wide"><span>Повтор</span><select id="plannerTaskRepeat"><option value="none">Не повторять</option><option value="daily">Каждый день</option><option value="weekly">Каждую неделю</option></select></label>
         </div>
         <div class="planner-link-helper"><select id="plannerLinkSelect"><option value="">Ссылка на заметку…</option></select><button id="plannerInsertLinkBtn" class="mini-btn">Вставить [[ссылку]]</button></div>
@@ -307,6 +351,7 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
-  <script type="module" src="./app-v1.5.js"></script>
+  <script type="module" src="./app-v1.7.js"></script>
 </body>
 </html>
+
