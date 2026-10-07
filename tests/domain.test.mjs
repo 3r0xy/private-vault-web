@@ -52,6 +52,7 @@ test('project routines continue week to week with stable identities and complete
   const first=hubTasksForWeek(templates,'2026-10-05',()=>Math.random().toString());
   const second=hubTasksForWeek(templates,'2026-10-12',()=>Math.random().toString());
   assert.equal(first.length,1);assert.equal(first[0].day,2);
+  assert.equal(first[0].hubRepeat,'weekly');
   assert.equal(second.length,2);assert.equal(second[1].day,0);
   assert.equal(mergeWeekTasks(second,hubTasksForWeek(templates,'2026-10-12',()=>'' )).length,2);
   assert.equal(weekStart('2026-10-11'),'2026-10-05');

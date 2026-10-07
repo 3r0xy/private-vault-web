@@ -21,7 +21,7 @@ export function hubTasksForWeek(tasks, start, id) {
       if (date < task.date) continue;
       const matches = task.repeat === 'daily' || (task.repeat === 'weekly' && weekStart(date) >= weekStart(task.date) && new Date(date+'T12:00:00Z').getUTCDay() === new Date(task.date+'T12:00:00Z').getUTCDay()) || date === task.date;
       if (!matches) continue;
-      result.push({id:id(),originKey:`hub:${task.id}:${date}`,hubTaskId:task.id,hubRevision:task.updatedAt || '',projectId:task.projectId || '',day,section:task.section || 'general',text:task.text,time:task.time || '',duration:task.duration || 0,repeat:'none',done:false,order:Date.now()+result.length});
+      result.push({id:id(),originKey:`hub:${task.id}:${date}`,hubTaskId:task.id,hubRepeat:task.repeat || 'none',hubRevision:task.updatedAt || '',projectId:task.projectId || '',day,section:task.section || 'general',text:task.text,time:task.time || '',duration:task.duration || 0,repeat:'none',done:false,order:Date.now()+result.length});
     }
   }
   return result;

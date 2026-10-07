@@ -3305,7 +3305,7 @@ async function plannerPreviousData(targetStart) {
 }
 function plannerCloneRecurring(source, targetStart) {
   const tasks = [];
-  if (!source) return tasks;
+  if (!source || source.routinesMigrated) return tasks;
   const daily = new Map(), weekly = new Map();
   for (const t of source.tasks) {
     if (t.repeat === "daily") {
@@ -3403,7 +3403,8 @@ function plannerTaskMetaHtml(task) {
   if (project) bits.push(`<span class="planner-pill">${escapeHtml(project)}</span>`);
   if (task.time) bits.push(`<span class="planner-pill">${escapeHtml(task.time)}</span>`);
   if (task.duration) bits.push(`<span class="planner-pill">⏱ ${escapeHtml(plannerDuration(task.duration))}</span>`);
-  if (task.repeat !== "none") bits.push(`<span class="planner-pill repeat">↻ ${escapeHtml(plannerRepeatLabel(task.repeat))}</span>`);
+  const repeat = task.hubRepeat || task.repeat;
+  if (repeat !== "none") bits.push(`<span class="planner-pill repeat">↻ ${escapeHtml(plannerRepeatLabel(repeat))}</span>`);
   return bits.join("");
 }
 function plannerRender() {
@@ -3597,7 +3598,7 @@ function plannerInsertSelectedLink() {
   input.setRangeText(insert,start,end,"end"); input.focus();
 }
 function plannerComputeReview(data = state.planner.data) {
-  return { overall:plannerOverallStats(data), categories:plannerCategoryStats(data), projects:plannerProjectStats(data), carry:(data?.tasks||[]).filter(t=>!t.done && t.repeat==="none") };
+  return { overall:plannerOverallStats(data), categories:plannerCategoryStats(data), projects:plannerProjectStats(data), carry:(data?.tasks||[]).filter(t=>!t.done && t.repeat==="none" && !(t.hubTaskId && t.hubRepeat && t.hubRepeat !== "none")) };
 }
 function plannerOpenReview() {
   if (!state.planner.data) return showToast("Сначала создай неделю.");
