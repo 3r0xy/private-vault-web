@@ -1,0 +1,40 @@
+{
+  "name": "private-vault-web",
+  "version": "1.0.0",
+  "description": "Luna — private GitHub vault",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "app.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "build": "node scripts/build-vendor.mjs",
+    "test": "node --test tests/domain.test.mjs",
+    "test:login": "node tests/login.test.cjs",
+    "test:browser": "node tests/browser.test.cjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/3r0xy/private-vault-web.git"
+  },
+  "keywords": [],
+  "author": "",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/3r0xy/private-vault-web/issues"
+  },
+  "homepage": "https://github.com/3r0xy/private-vault-web#readme",
+  "dependencies": {
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/lang-markdown": "6.5.2",
+    "@codemirror/state": "6.7.5",
+    "@codemirror/view": "6.43.12",
+    "d3": "7.9.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "playwright": "1.64.1"
+  }
+}

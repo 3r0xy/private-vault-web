@@ -13,9 +13,9 @@ import { createTaskHub } from "./task-hub.mjs";
  * было проще вносить без нарушения уже работающих функций.
  */
 
-import { EditorView, Decoration, WidgetType, ViewPlugin, keymap, drawSelection } from "https://esm.sh/@codemirror/view@6.43.12?deps=@codemirror/state@6.7.5";
-import { history, historyKeymap, defaultKeymap, undo, redo } from "https://esm.sh/@codemirror/commands@6.11.1?deps=@codemirror/state@6.7.5,@codemirror/view@6.43.12";
-import { markdown, markdownKeymap } from "https://esm.sh/@codemirror/lang-markdown@6.5.2?deps=@codemirror/state@6.7.5,@codemirror/view@6.43.12";
+import { EditorView, Decoration, WidgetType, ViewPlugin, keymap, drawSelection,
+  history, historyKeymap, defaultKeymap, undo, redo, markdown, markdownKeymap } from "./vendor/codemirror.js";
+import * as d3 from "./vendor/d3.js";
 console.info("note v1.5 planner loaded");
 
 // ---------- GitHub / глобальное состояние приложения ----------
@@ -128,15 +128,21 @@ function headers(extra = {}) {
 }
 
 async function gh(path, options = {}) {
-  options = { cache: "no-store", ...options };
-  const res = await fetch(`${API}${path}`, { ...options, headers: headers(options.headers || {}) });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    const error = new Error(data.message || `${res.status} ${res.statusText}`);
-    error.status = res.status;
-    throw error;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    options = { cache: "no-store", signal: controller.signal, ...options };
+    const res = await fetch(`${API}${path}`, { ...options, headers: headers(options.headers || {}) });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      const error = new Error(data.message || `${res.status} ${res.statusText}`);
+      error.status = res.status;
+      throw error;
+    }
+    return res.status === 204 ? null : await res.json();
+  } finally {
+    clearTimeout(timer);
   }
-  return res.status === 204 ? null : res.json();
 }
 
 function encodePath(path) {
@@ -718,6 +724,7 @@ function removeFolderColors(folder) {
 
 // ---------- Подключение к vault и загрузка дерева файлов ----------
 async function connect() {
+  if (els.connectBtn.disabled) return;
   els.loginError.textContent = "";
   state.owner = els.ownerInput.value.trim();
   state.repo = els.repoInput.value.trim();
@@ -729,13 +736,11 @@ async function connect() {
   }
 
   els.connectBtn.disabled = true;
+  els.connectBtn.textContent = "Подключение…";
+  els.connectBtn.setAttribute("aria-busy", "true");
   try {
     const repo = await gh(`/repos/${encodeURIComponent(state.owner)}/${encodeURIComponent(state.repo)}`);
     state.branch = repo.default_branch || "main";
-
-    sessionStorage.setItem("pv_owner", state.owner);
-    sessionStorage.setItem("pv_repo", state.repo);
-    sessionStorage.setItem("pv_token", state.token);
 
     els.vaultTitle.textContent = "luna";
     els.branchStatus.textContent = state.branch;
@@ -743,13 +748,38 @@ async function connect() {
     state._expandedLoaded = false;
     await loadTree();
 
+    // Storage may be denied by the browser; keep the active session in memory.
+    let sessionSaved = false;
+    try {
+      sessionStorage.setItem("pv_owner", state.owner);
+      sessionStorage.setItem("pv_repo", state.repo);
+      sessionStorage.setItem("pv_token", state.token);
+      sessionSaved = true;
+    } catch {}
+
     els.loginView.classList.add("hidden");
     els.appView.classList.remove("hidden");
-    await restoreTabsWorkspace();
+    if (!sessionSaved) showToast("Браузер не сохраняет сессию: после обновления страницы потребуется войти снова.");
+    try { await restoreTabsWorkspace(); }
+    catch { showToast("Хранилище открыто. Не удалось восстановить вкладки — выбери заметку в проводнике."); }
   } catch (e) {
-    els.loginError.textContent = `Не удалось подключиться: ${e.message}`;
+    const messages = {
+      401: "GitHub отклонил token. Проверь, что он действителен и не истёк.",
+      403: "GitHub запретил доступ. Проверь доступ token к репозиторию и разрешение Contents: Read. Также возможен лимит запросов GitHub.",
+      404: "Репозиторий или его ветка не найдены. Проверь owner, repository и доступ token к этому репозиторию.",
+      409: "В репозитории пока нет файлов или доступной ветки. Проверь его на GitHub.",
+      429: "Слишком много запросов к GitHub. Подожди немного и повтори вход.",
+    };
+    const reason = messages[e.status] || (e.status >= 500
+      ? "GitHub временно недоступен. Повтори вход позже."
+      : e.name === "AbortError"
+        ? "GitHub не ответил за 15 секунд. Проверь соединение и повтори вход."
+        : "Не удалось получить данные GitHub. Проверь интернет-соединение и повтори вход.");
+    els.loginError.textContent = `Не удалось подключиться: ${reason}`;
   } finally {
     els.connectBtn.disabled = false;
+    els.connectBtn.textContent = "Открыть luna";
+    els.connectBtn.removeAttribute("aria-busy");
   }
 }
 
@@ -2750,7 +2780,6 @@ async function buildGraph(forceReload = false) {
   if (state.graph.building) return;
   captureActiveTab();
   state.graph.building = true;
-  if (!window.d3) { state.graph.building = false; return showToast("D3 не загрузился — проверь интернет-соединение."); }
   els.graphLoading.classList.remove("hidden");
   try {
     // Always refresh the repository tree before building the graph so every
@@ -3712,9 +3741,11 @@ async function plannerOpenMarkdown() {
 
 
 function logout() {
-  sessionStorage.removeItem("pv_owner");
-  sessionStorage.removeItem("pv_repo");
-  sessionStorage.removeItem("pv_token");
+  try {
+    sessionStorage.removeItem("pv_owner");
+    sessionStorage.removeItem("pv_repo");
+    sessionStorage.removeItem("pv_token");
+  } catch {}
   location.reload();
 }
 
@@ -3821,10 +3852,12 @@ els.paneSplitter.addEventListener("pointerdown", e => {
 });
 
 function restorePanelWidths() {
-  const left = Number(localStorage.getItem("pv_sidebar_width"));
-  const right = Number(localStorage.getItem("pv_context_width"));
-  if (Number.isFinite(left) && left >= 180 && left <= 520) document.documentElement.style.setProperty("--sidebar", `${left}px`);
-  if (Number.isFinite(right) && right >= 200 && right <= 520) document.documentElement.style.setProperty("--context", `${right}px`);
+  try {
+    const left = Number(localStorage.getItem("pv_sidebar_width"));
+    const right = Number(localStorage.getItem("pv_context_width"));
+    if (Number.isFinite(left) && left >= 180 && left <= 520) document.documentElement.style.setProperty("--sidebar", `${left}px`);
+    if (Number.isFinite(right) && right >= 200 && right <= 520) document.documentElement.style.setProperty("--context", `${right}px`);
+  } catch {}
 }
 
 function setupSidebarResizer(handle, side) {
@@ -3842,14 +3875,14 @@ function setupSidebarResizer(handle, side) {
     const up = ev => {
       handle.classList.remove("dragging"); window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
       const value = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(side === "left" ? "--sidebar" : "--context"));
-      localStorage.setItem(side === "left" ? "pv_sidebar_width" : "pv_context_width", String(value));
+      try { localStorage.setItem(side === "left" ? "pv_sidebar_width" : "pv_context_width", String(value)); } catch {}
     };
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up, { once: true });
   });
   handle.addEventListener("dblclick", () => {
     const value = side === "left" ? 270 : 285;
     document.documentElement.style.setProperty(side === "left" ? "--sidebar" : "--context", `${value}px`);
-    localStorage.removeItem(side === "left" ? "pv_sidebar_width" : "pv_context_width");
+    try { localStorage.removeItem(side === "left" ? "pv_sidebar_width" : "pv_context_width"); } catch {}
   });
 }
 restorePanelWidths(); setupSidebarResizer(els.leftSidebarResizer, "left"); setupSidebarResizer(els.rightSidebarResizer, "right");
@@ -3909,17 +3942,19 @@ window.addEventListener("resize", () => {
   }
 });
 
-(function restoreSession() {
-  const owner = sessionStorage.getItem("pv_owner");
-  const repo = sessionStorage.getItem("pv_repo");
-  const token = sessionStorage.getItem("pv_token");
-  if (owner && repo && token) {
-    els.ownerInput.value = owner;
-    els.repoInput.value = repo;
-    els.tokenInput.value = token;
-    connect();
-  }
-})();
+export function restoreSession() {
+  try {
+    const owner = sessionStorage.getItem("pv_owner");
+    const repo = sessionStorage.getItem("pv_repo");
+    const token = sessionStorage.getItem("pv_token");
+    if (owner && repo && token) {
+      els.ownerInput.value = owner;
+      els.repoInput.value = repo;
+      els.tokenInput.value = token;
+      connect();
+    }
+  } catch {}
+}
 
 console.info("luna ready");
 

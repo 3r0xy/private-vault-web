@@ -21,8 +21,10 @@
       <label>GitHub owner<input id="ownerInput" autocomplete="username" placeholder="your-github-name" /></label>
       <label>Repository<input id="repoInput" placeholder="my-vault" /></label>
       <label>Fine-grained token<input id="tokenInput" type="password" autocomplete="off" placeholder="github_pat_..." /></label>
-      <button id="connectBtn" class="primary-btn">Открыть luna</button>
-      <p id="loginError" class="error"></p>
+      <button id="connectBtn" class="primary-btn" disabled>Загрузка luna…</button>
+      <p id="loginError" class="error" role="alert" aria-live="polite"></p>
+      <button id="reloadBtn" class="primary-btn" hidden>Обновить страницу</button>
+      <noscript><p class="error">Для работы luna включи JavaScript в браузере.</p></noscript>
       <details><summary>Зачем нужен token?</summary><p class="small muted">Он даёт браузеру доступ к выбранному private-репозиторию. Token хранится только в sessionStorage текущей браузерной сессии.</p></details>
     </div>
   </div>
@@ -354,8 +356,36 @@
     <div id="toast" class="toast hidden"></div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
-  <script type="module" src="./app.js?v=luna-2"></script>
+  <!-- This independent loader can report failed imports before app.js runs. -->
+  <script>
+    (() => {
+      const button = document.getElementById("connectBtn");
+      const error = document.getElementById("loginError");
+      const reload = document.getElementById("reloadBtn");
+      let ready = false;
+      const showStartupError = () => {
+        if (ready) return;
+        button.disabled = true;
+        button.textContent = "luna не загрузилась";
+        error.textContent = "Не удалось загрузить приложение. Проверь соединение и нажми «Обновить страницу». Если ошибка повторяется, попробуй Ctrl+Shift+R.";
+        reload.hidden = false;
+      };
+      reload.onclick = () => location.reload();
+      const timer = setTimeout(showStartupError, 20000);
+      import("./app.js?v=luna-local-1").then(app => {
+        clearTimeout(timer);
+        ready = true;
+        error.textContent = "";
+        reload.hidden = true;
+        button.disabled = false;
+        button.textContent = "Открыть luna";
+        app.restoreSession();
+      }).catch(() => {
+        clearTimeout(timer);
+        showStartupError();
+      });
+    })();
+  </script>
 </body>
 </html>
 

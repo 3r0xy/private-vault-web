@@ -62,9 +62,10 @@ async function api(route){
 function readWeek(start){const text=blobs.get(files.get(`planner/weeks/${start}.md`).sha);return JSON.parse(Buffer.from(text.match(/NOTE_PLANNER_STATE:([^ ]+)/)[1],'base64').toString());}
 async function main(){
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-  const browser=await chromium.launch({headless:true,...(process.env.BROWSER_EXECUTABLE?{executablePath:process.env.BROWSER_EXECUTABLE}:{})});
+  const browser=await chromium.launch({headless:true,...(process.env.BROWSER_CHANNEL?{channel:process.env.BROWSER_CHANNEL}:{}),...(process.env.BROWSER_EXECUTABLE?{executablePath:process.env.BROWSER_EXECUTABLE}:{})});
   try{
     const context=await browser.newContext({timezoneId:'Asia/Krasnoyarsk',viewport:{width:1440,height:950}});
+    await context.route(/https:\/\/(esm\.sh|cdn\.jsdelivr\.net)\//,route=>route.abort());
     await context.route('https://api.github.com/**',api);
     const page=await context.newPage(),errors=[];
     page.on('pageerror',e=>errors.push(e.message));
