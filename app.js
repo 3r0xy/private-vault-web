@@ -1,3 +1,4 @@
+import { oauthMode, session as oauthSession, loadSession, startLogin, endSession } from "./auth.mjs";
 import { resolveNote, noteLinks, folderMoveEntries, mergeWeekTasks, rewriteFolderLinks } from "./domain.mjs";
 import { createTaskHub } from "./task-hub.mjs";
 /*
@@ -7,7 +8,7 @@ import { createTaskHub } from "./task-hub.mjs";
  * - GitHub API хранит заметки и planner/*.md в приватном vault.
  * - CodeMirror отвечает за Live Preview/Markdown-редактор.
  * - Планер является представлением Markdown, а не отдельной базой данных.
- * - Данные авторизации не зашиты в исходники: токен вводится пользователем.
+ * - Данные авторизации не зашиты в исходники: OAuth-токен хранит backend; GitHub Pages сохраняет прежний резервный вход.
  *
  * Основные блоки файла помечены комментариями ниже, чтобы будущие правки
  * было проще вносить без нарушения уже работающих функций.
@@ -19,7 +20,7 @@ import * as d3 from "./vendor/d3.js";
 console.info("note v1.5 planner loaded");
 
 // ---------- GitHub / глобальное состояние приложения ----------
-const API = "https://api.github.com";
+const API = oauthMode ? "/api/github" : "https://api.github.com";
 const state = {
   token: "",
   owner: "",
@@ -121,7 +122,7 @@ try {
 function headers(extra = {}) {
   return {
     "Accept": "application/vnd.github+json",
-    "Authorization": `Bearer ${state.token}`,
+    ...(oauthMode ? (oauthSession?.csrf ? { "X-Luna-CSRF": oauthSession.csrf } : {}) : { "Authorization": `Bearer ${state.token}` }),
     "X-GitHub-Api-Version": "2022-11-28",
     ...extra,
   };
@@ -131,10 +132,18 @@ async function gh(path, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
-    options = { cache: "no-store", signal: controller.signal, ...options };
+    if (oauthMode && options.method && options.method !== "GET" && !oauthSession?.writeEnabled) {
+      throw Object.assign(new Error("Vault открыт только для чтения. Запись может включить владелец сервера Luna."), { status: 403 });
+    }
+    options = { cache: "no-store", credentials: "same-origin", signal: controller.signal, ...options };
     const res = await fetch(`${API}${path}`, { ...options, headers: headers(options.headers || {}) });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
+      if (oauthMode && res.status === 401) {
+        els.appView.classList.add("hidden");
+        els.loginView.classList.remove("hidden");
+        els.loginError.textContent = "Сессия истекла или доступ отозван. Войди через GitHub снова.";
+      }
       const error = new Error(data.message || `${res.status} ${res.statusText}`);
       error.status = res.status;
       throw error;
@@ -726,11 +735,11 @@ function removeFolderColors(folder) {
 async function connect() {
   if (els.connectBtn.disabled) return;
   els.loginError.textContent = "";
-  state.owner = els.ownerInput.value.trim();
-  state.repo = els.repoInput.value.trim();
-  state.token = els.tokenInput.value.trim();
+  state.owner = oauthMode ? oauthSession?.owner : els.ownerInput.value.trim();
+  state.repo = oauthMode ? oauthSession?.repo : els.repoInput.value.trim();
+  state.token = oauthMode ? "" : els.tokenInput.value.trim();
 
-  if (!state.owner || !state.repo || !state.token) {
+  if (!state.owner || !state.repo || (!oauthMode && !state.token)) {
     els.loginError.textContent = "Заполни owner, repository и token.";
     return;
   }
@@ -743,14 +752,14 @@ async function connect() {
     state.branch = repo.default_branch || "main";
 
     els.vaultTitle.textContent = "luna";
-    els.branchStatus.textContent = state.branch;
+    els.branchStatus.textContent = state.branch + (oauthMode && !oauthSession.writeEnabled ? " · только чтение" : "");
     loadFolderColors();
     state._expandedLoaded = false;
     await loadTree();
 
     // Storage may be denied by the browser; keep the active session in memory.
-    let sessionSaved = false;
-    try {
+    let sessionSaved = oauthMode;
+    if (!oauthMode) try {
       sessionStorage.setItem("pv_owner", state.owner);
       sessionStorage.setItem("pv_repo", state.repo);
       sessionStorage.setItem("pv_token", state.token);
@@ -770,7 +779,7 @@ async function connect() {
       409: "В репозитории пока нет файлов или доступной ветки. Проверь его на GitHub.",
       429: "Слишком много запросов к GitHub. Подожди немного и повтори вход.",
     };
-    const reason = messages[e.status] || (e.status >= 500
+    const reason = (oauthMode && e.status ? e.message : messages[e.status]) || (e.status >= 500
       ? "GitHub временно недоступен. Повтори вход позже."
       : e.name === "AbortError"
         ? "GitHub не ответил за 15 секунд. Проверь соединение и повтори вход."
@@ -3740,7 +3749,12 @@ async function plannerOpenMarkdown() {
 }
 
 
-function logout() {
+async function logout() {
+  if (oauthMode) {
+    try { await endSession(); }
+    catch { showToast("Не удалось выйти. Проверь соединение и повтори выход."); }
+    return;
+  }
   try {
     sessionStorage.removeItem("pv_owner");
     sessionStorage.removeItem("pv_repo");
@@ -3942,7 +3956,42 @@ window.addEventListener("resize", () => {
   }
 });
 
-export function restoreSession() {
+export async function restoreSession() {
+  if (oauthMode) {
+    $("legacyLogin").hidden = true;
+    $("githubLoginBtn").hidden = false;
+    $("oauthNotice").textContent = "Войди через GitHub. Сессия сохранится на этом устройстве. GitHub запросит доступ repo к приватным репозиториям; Luna использует только настроенный vault.";
+    // Remove legacy credentials from this origin, including browser-restored sessions.
+    try { sessionStorage.removeItem("pv_token"); } catch {}
+    els.tokenInput.value = "";
+    const button = $("githubLoginBtn");
+    const check = async () => {
+      button.disabled = true;
+      try {
+        const session = await loadSession();
+        if (session.authenticated) await connect();
+      } catch {
+        els.loginError.textContent = "Не удалось проверить сессию Luna. Проверь соединение и нажми кнопку входа ещё раз.";
+      } finally { button.disabled = false; }
+    };
+    button.onclick = async () => {
+      button.disabled = true;
+      els.loginError.textContent = "";
+      try {
+        const session = await loadSession();
+        if (session.authenticated) await connect();
+        else await startLogin();
+      } catch (error) {
+        els.loginError.textContent = error.message;
+      } finally { button.disabled = false; }
+    };
+    if (new URL(location.href).searchParams.has("auth")) {
+      history.replaceState(null, "", "/");
+      els.loginError.textContent = "GitHub не завершил вход. Повтори вход и проверь, что выбран разрешённый аккаунт и выдан доступ к vault.";
+    }
+    await check();
+    return;
+  }
   try {
     const owner = sessionStorage.getItem("pv_owner");
     const repo = sessionStorage.getItem("pv_repo");
@@ -3957,4 +4006,19 @@ export function restoreSession() {
 }
 
 console.info("luna ready");
+
+if (oauthMode) {
+  // Recheck sessions after returning from the background; do not expose a cached editor.
+  window.addEventListener("pageshow", event => { if (event.persisted) location.reload(); });
+  document.addEventListener("visibilitychange", async () => {
+    if (document.visibilityState !== "visible" || els.appView.classList.contains("hidden")) return;
+    const expired = () => {
+      els.appView.classList.add("hidden");
+      els.loginView.classList.remove("hidden");
+      els.loginError.textContent = "Сессия истекла или доступ отозван. Войди через GitHub снова.";
+    };
+    try { if (!(await loadSession()).authenticated) expired(); }
+    catch (error) { if (error.status === 401) expired(); }
+  });
+}
 
