@@ -142,9 +142,14 @@ async function main() {
       assert.equal(await page.locator('#connectBtn').isDisabled(), true);
     });
     await check('slow module: startup timeout is visible and late success recovers', async page => {
-      let release;
-      await page.route('**/vendor/codemirror.js', route => { release = () => route.continue(); });
+      let release, intercepted;
+      const moduleRequested = new Promise(resolve => { intercepted = resolve; });
+      await page.route('**/vendor/codemirror.js', route => {
+        release = () => route.continue();
+        intercepted();
+      });
       await page.clock.install(); await page.goto(url, { waitUntil: 'domcontentloaded' });
+      await moduleRequested;
       await page.clock.runFor(20001);
       await page.locator('#reloadBtn').waitFor({ state: 'visible' });
       assert.equal(await page.locator('#connectBtn').isDisabled(), true);
