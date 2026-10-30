@@ -1,0 +1,25 @@
+[Unit]
+Description=Luna OAuth backend
+After=network.target
+
+[Service]
+Type=simple
+User=luna
+Group=luna
+WorkingDirectory=/opt/luna
+EnvironmentFile=/etc/luna.env
+# Adjust this path if Node 24 is installed elsewhere.
+ExecStart=/usr/bin/node /opt/luna/server/start.mjs
+Restart=on-failure
+UMask=0077
+StateDirectory=luna
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/luna
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target
