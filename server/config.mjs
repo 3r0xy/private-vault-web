@@ -11,7 +11,7 @@ export function readConfig(env = process.env) {
     if (!env[name]) throw new Error(`${name} is required`);
   }
   if (!/^\d+$/.test(env.ALLOWED_GITHUB_USER_ID)) throw new Error('ALLOWED_GITHUB_USER_ID must be numeric');
-  const owner = env.VAULT_OWNER || '3r0xy', repo = env.VAULT_REPO || 'my-vault';
+  const owner = env.VAULT_OWNER || '3r0xy', repo = env.VAULT_REPO || 'my-private-vault';
   if (![owner, repo].every(x => /^[A-Za-z0-9_.-]+$/.test(x) && !['.', '..'].includes(x))) throw new Error('Invalid vault name');
   const days = Number(env.SESSION_DAYS || 30);
   if (!Number.isInteger(days) || days < 1 || days > 90) throw new Error('SESSION_DAYS must be 1..90');

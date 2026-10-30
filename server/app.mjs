@@ -2,9 +2,11 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { random, hash } from './store.mjs';
+import { random, hash } from './store-core.mjs';
 
-const root = fileURLToPath(new URL('../', import.meta.url));
+let root;
+try { root = fileURLToPath(new URL('../', import.meta.url)); }
+catch { root = '/'; } // Workers inject readAsset instead of filesystem access.
 const files = new Set(['index.html', 'app.js', 'domain.mjs', 'task-hub.mjs', 'auth.mjs', 'loader.js',
   'styles.css', 'manifest.webmanifest', 'favicon.ico', 'vendor/codemirror.js', 'vendor/d3.js',
   'icons/note-cat-192.png', 'icons/note-cat-512.png']);
@@ -44,7 +46,7 @@ export function allowedTarget(raw, method, config) {
     (method === 'PATCH' && /^\/git\/refs\/heads\/.+$/.test(tail));
 }
 
-export function createApp(config, store, { fetchImpl = fetch, now = Date.now } = {}) {
+export function createApp(config, store, { fetchImpl = fetch, now = Date.now, readAsset = file => readFile(resolve(root, file)), checkLogin = () => true } = {}) {
   const sidName = config.secure ? '__Host-luna-session' : 'luna-session';
   const flowName = config.secure ? '__Host-luna-flow' : 'luna-flow';
   const refreshes = new Map();
@@ -54,16 +56,22 @@ export function createApp(config, store, { fetchImpl = fetch, now = Date.now } =
   }
   async function upstream(url, options) {
     // Never follow a redirect with credentials; never log request URLs, bodies or headers.
-    return fetchImpl(url, { ...options, redirect: 'error', signal: AbortSignal.timeout(12000) });
+    const response = await fetchImpl(url, { ...options, redirect: 'manual', signal: AbortSignal.timeout(12000) });
+    if (response.status >= 300 && response.status < 400) throw Object.assign(httpError(502, 'GitHub вернул неожиданный переход.'), { oauthFailure: 'redirect' });
+    return response;
   }
   async function exchange(body) {
     const response = await upstream('https://github.com/login/oauth/access_token', {
       method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ client_id: config.clientId, client_secret: config.clientSecret, ...body }).toString(),
     });
-    if (!response.ok) throw httpError(502, 'GitHub временно недоступен.');
+    if (!response.ok) throw Object.assign(httpError(502, 'GitHub временно недоступен.'), { oauthFailure: 'http_' + response.status });
     const result = await response.json();
-    if (result.error || !result.access_token || result.token_type?.toLowerCase() !== 'bearer') throw httpError(401, 'Повтори вход через GitHub.');
+    if (result.error) {
+      const known = ['bad_verification_code', 'incorrect_client_credentials', 'redirect_uri_mismatch', 'unverified_user_email', 'application_suspended'];
+      throw Object.assign(httpError(401, 'Повтори вход через GitHub.'), { oauthFailure: known.includes(result.error) ? result.error : 'provider_error' });
+    }
+    if (!result.access_token || result.token_type?.toLowerCase() !== 'bearer') throw Object.assign(httpError(401, 'Повтори вход через GitHub.'), { oauthFailure: 'malformed_response' });
     if (!String(result.scope || '').split(/[ ,]+/).includes('repo')) throw httpError(403, 'Для приватного vault нужен доступ repo.');
     // Expiring tokens are supported, including refresh-token rotation.
     return { token: result.access_token, refresh: result.refresh_token,
@@ -118,7 +126,7 @@ export function createApp(config, store, { fetchImpl = fetch, now = Date.now } =
     if (config.secure) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
     const json = (status, data) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(data)); };
     const redirect = (target, cookies = []) => { res.writeHead(303, { Location: target, 'Set-Cookie': cookies }); res.end(); };
-    let route = '';
+    let route = '', authStep = 'state';
     try {
       if (req.headers.host !== new URL(config.origin).host) throw httpError(400, 'Неверный адрес приложения.');
       const url = new URL(req.url, config.origin); route = url.pathname;
@@ -131,6 +139,7 @@ export function createApp(config, store, { fetchImpl = fetch, now = Date.now } =
       const csrf = value => { origin(); if (!value || req.headers['x-luna-csrf'] !== value.csrf) throw httpError(403, 'Обнови страницу и повтори действие.'); };
       if (route === '/auth/start' && req.method === 'POST') {
         origin();
+        if (!checkLogin(req)) throw httpError(429, 'Слишком много попыток входа. Подожди несколько минут.');
         const state = random(), binding = random(), verifier = random();
         store.flow(state, binding, verifier, now());
         const url = new URL('https://github.com/login/oauth/authorize');
@@ -143,11 +152,15 @@ export function createApp(config, store, { fetchImpl = fetch, now = Date.now } =
         const state = url.searchParams.get('state') || '', code = url.searchParams.get('code') || '';
         const verifier = store.consume(state, cookies[flowName] || '', now());
         if (!verifier || !code || code.length > 1024 || url.searchParams.has('error')) throw httpError(401, 'Повтори вход через GitHub.');
+        authStep = 'exchange';
         const credentials = await exchange({ code, redirect_uri: callback, code_verifier: verifier });
+        authStep = 'identity';
         const user = await github('/user', credentials);
         if (!user.ok || String((await user.json()).id) !== config.userId) throw httpError(403, 'Этот аккаунт не имеет доступа к Luna.');
+        authStep = 'vault';
         const repo = await github(`/repos/${config.owner}/${config.repo}`, credentials);
         if (!repo.ok) throw httpError(403, 'GitHub не дал доступ к vault.');
+        authStep = 'session';
         store.remove(id); // Rotate the session on every successful login.
         store.cleanup(now());
         const created = store.session(credentials, now(), config.lifetime);
@@ -182,14 +195,14 @@ export function createApp(config, store, { fetchImpl = fetch, now = Date.now } =
       if (!['GET', 'HEAD'].includes(req.method)) throw httpError(405, 'Метод не поддерживается.');
       const file = route === '/' ? 'index.html' : route.slice(1);
       if (!files.has(file)) throw httpError(404, 'Не найдено.');
-      let data = await readFile(resolve(root, file));
+      let data = await readAsset(file);
       if (file === 'index.html') data = Buffer.from(data.toString().replace('<head>', '<head>\n  <meta name="luna-auth" content="oauth">'));
       res.writeHead(200, { 'Content-Type': mime[file.split('.').pop()] || 'application/octet-stream' });
       res.end(req.method === 'HEAD' ? undefined : data);
     } catch (error) {
       // Deliberately do not log error objects: provider errors may contain credentials.
       if (res.headersSent) return res.destroy();
-      if (route === '/auth/callback') return redirect('/?auth=failed', [cookie(flowName, '', 0)]);
+      if (route === '/auth/callback') return redirect('/?auth=failed&reason=' + authStep + '_' + (error.oauthFailure || (error.name === 'TimeoutError' ? 'timeout' : error.status ? String(error.status) : 'transport')), [cookie(flowName, '', 0)]);
       const status = error.status || 502;
       return json(status, { message: error.status ? error.message : 'Сервис временно недоступен. Повтори позже.' });
     }

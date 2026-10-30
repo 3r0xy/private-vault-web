@@ -1,0 +1,46 @@
+{
+  "name": "luna-private-vault",
+  "main": "cloudflare/worker.mjs",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "workers_dev": true,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./work/worker-assets",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "LUNA_SESSIONS",
+        "class_name": "LunaSessions"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "LunaSessions"
+      ]
+    }
+  ],
+  "observability": {
+    "enabled": false
+  },
+  "vars": {
+    "ALLOWED_GITHUB_USER_ID": "60850311",
+    "VAULT_OWNER": "3r0xy",
+    "VAULT_REPO": "my-private-vault",
+    "VAULT_WRITE_ENABLED": "true",
+    "SESSION_DAYS": "30",
+    "PUBLIC_ORIGIN": "https://luna-private-vault.k-media-circle.workers.dev",
+    "GITHUB_CLIENT_ID": "Ov23li7BiulfHN899b7B"
+  },
+  "build": {
+    "command": "node cloudflare/prepare.mjs"
+  }
+}

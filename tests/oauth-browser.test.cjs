@@ -93,6 +93,13 @@ async function main() {
     console.log('PASS denied browser storage, cookie restore and revoked GitHub access');
     revoked = false;
     ctx = await context();
+    page = await ctx.newPage(); await page.goto(config.origin + '/?auth=failed&reason=exchange');
+    await page.locator('#githubLoginBtn:not([disabled])').waitFor();
+    assert.match(await page.locator('#loginError').innerText(), /GitHub не завершил вход/);
+    assert.equal(page.url(), config.origin + '/');
+    await ctx.close();
+    console.log('PASS denied OAuth callback shows an error and clears its query');
+    ctx = await context();
     await ctx.route('**/auth/session', route => route.fulfill({ status: 503, json: { message: 'Temporary failure' } }));
     page = await ctx.newPage(); await page.goto(config.origin);
     await page.locator('#githubLoginBtn:not([disabled])').waitFor();

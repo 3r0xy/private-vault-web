@@ -17,8 +17,9 @@ async function fixture(t, change = {}) {
   const provider = { userId: 60850311, scope: 'repo', expires: null, denied: false, api401: false, refreshFail: false };
   const fetchImpl = async (url, options) => {
     calls.push({ url, ...options });
-    assert.equal(options.redirect, 'error');
+    assert.equal(options.redirect, 'manual');
     if (url === 'https://github.com/login/oauth/access_token') {
+      if (provider.redirect) return new Response(null, { status: 302, headers: { Location: 'https://invalid.example/token' } });
       const params = new URLSearchParams(options.body);
       assert.equal(params.get('client_secret'), 'fixture-secret');
       if (provider.denied || (provider.refreshFail && params.has('refresh_token'))) return Response.json({ error: 'bad_verification_code' });
@@ -50,7 +51,7 @@ async function fixture(t, change = {}) {
     return request('/auth/callback?code=fixture-code&state=' + flow.url.searchParams.get('state'), { headers: { Cookie: flow.cookie } });
   }
   async function login() {
-    const response = await finish(await start()); assert.equal(response.headers.get('location'), '/');
+    const response = await finish(await start()); assert.equal(response.headers.get('location')?.split('&')[0], '/');
     const cookie = response.headers.getSetCookie()[0].split(';')[0];
     const session = await (await request('/auth/session', { headers: { Cookie: cookie } })).json();
     return { cookie, session, response };
@@ -65,7 +66,7 @@ test('OAuth code + PKCE + bound state, session cookie and private proxy; no cred
   assert.equal(flow.url.searchParams.get('code_challenge_method'), 'S256');
   assert.match(flow.fullCookie, /HttpOnly; SameSite=Lax; Max-Age=600; Secure/);
   const callback = await f.finish(flow);
-  assert.equal(callback.status, 303); assert.equal(callback.headers.get('location'), '/');
+  assert.equal(callback.status, 303); assert.equal(callback.headers.get('location')?.split('&')[0], '/');
   const exchange = f.calls.find(x => x.url.includes('access_token'));
   const verifier = new URLSearchParams(exchange.body).get('code_verifier');
   assert.equal(hash(verifier), flow.url.searchParams.get('code_challenge'));
@@ -78,7 +79,7 @@ test('OAuth code + PKCE + bound state, session cookie and private proxy; no cred
   assert.equal(res.headers.get('cache-control'), 'no-store'); assert.equal(res.headers.get('access-control-allow-origin'), null);
   const file = await f.request('/api/github/repos/3r0xy/my-vault/contents/%D0%97.md?ref=main', { headers: { Cookie: cookie, Authorization: 'Bearer attacker' } });
   assert.equal(file.status, 200); assert.equal((await file.json()).content, 'fixture-note');
-  const replay = await f.finish(flow); assert.equal(replay.headers.get('location'), '/?auth=failed');
+  const replay = await f.finish(flow); assert.equal(replay.headers.get('location')?.split('&')[0], '/?auth=failed');
   assert.equal(f.calls.filter(x => x.url.includes('access_token')).length, 1);
   const row = f.store.db.prepare('SELECT * FROM sessions').get();
   assert.ok(!JSON.stringify(row).includes('fixture-token')); assert.ok(!JSON.stringify(row).includes(cookie.split('=')[1]));
@@ -89,17 +90,17 @@ test('missing/wrong browser binding and expired state fail before exchange', asy
   for (const binding of ['', '__Host-luna-flow=attacker']) {
     const flow = await f.start();
     const response = await f.request('/auth/callback?code=fixture-code&state=' + flow.url.searchParams.get('state'), { headers: { Cookie: binding } });
-    assert.equal(response.headers.get('location'), '/?auth=failed');
+    assert.equal(response.headers.get('location')?.split('&')[0], '/?auth=failed');
   }
   const flow = await f.start(); f.advance(600_001);
-  assert.equal((await f.finish(flow)).headers.get('location'), '/?auth=failed');
+  assert.equal((await f.finish(flow)).headers.get('location')?.split('&')[0], '/?auth=failed');
   assert.equal(f.calls.length, 0);
 });
 
 test('state is single-use when callbacks race', async t => {
   const f = await fixture(t), flow = await f.start();
   const responses = await Promise.all([f.finish(flow), f.finish(flow)]);
-  assert.deepEqual(responses.map(x => x.headers.get('location')).sort(), ['/', '/?auth=failed']);
+  assert.deepEqual(responses.map(x => x.headers.get('location')?.split('&')[0]).sort(), ['/', '/?auth=failed']);
   assert.equal(f.calls.filter(x => x.url.includes('access_token')).length, 1);
 });
 
@@ -107,13 +108,13 @@ test('wrong GitHub identity, insufficient scope, denial and provider error never
   for (const setting of [{ userId: 1 }, { scope: 'public_repo' }, { denied: true }]) {
     const f = await fixture(t); Object.assign(f.provider, setting);
     const res = await f.finish(await f.start());
-    assert.equal(res.headers.get('location'), '/?auth=failed');
+    assert.equal(res.headers.get('location')?.split('&')[0], '/?auth=failed');
     assert.ok(!res.headers.getSetCookie().some(x => x.startsWith('__Host-luna-session=')));
     assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM sessions').get().n, 0);
   }
   const f = await fixture(t), flow = await f.start();
   const res = await f.request('/auth/callback?error=access_denied&state=' + flow.url.searchParams.get('state'), { headers: { Cookie: flow.cookie } });
-  assert.equal(res.headers.get('location'), '/?auth=failed'); assert.equal(f.calls.length, 0);
+  assert.equal(res.headers.get('location')?.split('&')[0], '/?auth=failed'); assert.equal(f.calls.length, 0);
 });
 
 test('fixed vault and API allowlist reject traversal, other repos, arbitrary hosts and non-Luna operations', () => {
@@ -168,7 +169,7 @@ test('session rotation, absolute expiry and upstream revocation', async t => {
   const f = await fixture(t), first = await f.login();
   const flow = await f.start();
   const res = await f.request('/auth/callback?code=fixture-code&state=' + flow.url.searchParams.get('state'), { headers: { Cookie: flow.cookie + '; ' + first.cookie } });
-  assert.equal(res.headers.get('location'), '/');
+  assert.equal(res.headers.get('location')?.split('&')[0], '/');
   assert.equal((await (await f.request('/auth/session', { headers: { Cookie: first.cookie } })).json()).authenticated, false);
   const { cookie } = await f.login(); f.provider.api401 = true;
   const failure = await f.request('/api/github/repos/3r0xy/my-vault', { headers: { Cookie: cookie } });
@@ -219,4 +220,12 @@ test('production configuration fails closed on missing secrets, unsafe origins o
   assert.equal(readConfig(env).write, false);
   for (const patch of [{ PUBLIC_ORIGIN: 'http://luna.example.com' }, { PUBLIC_ORIGIN: env.PUBLIC_ORIGIN + '/' },
     { ALLOWED_GITHUB_USER_ID: '3r0xy' }, { SESSION_DAYS: '1000' }, { VAULT_REPO: '..' }]) assert.throws(() => readConfig({ ...env, ...patch }));
+});
+
+test('upstream redirects are rejected before any credential can be forwarded', async t => {
+  const f = await fixture(t); f.provider.redirect = true;
+  const res = await f.finish(await f.start());
+  assert.equal(res.headers.get('location'), '/?auth=failed&reason=exchange_redirect');
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].url, 'https://github.com/login/oauth/access_token');
 });

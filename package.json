@@ -16,7 +16,8 @@
     "test:browser": "node tests/browser.test.cjs",
     "start": "node --env-file-if-exists=.env server/start.mjs",
     "test:oauth": "node --test tests/oauth.test.mjs",
-    "test:oauth-browser": "node tests/oauth-browser.test.cjs"
+    "test:oauth-browser": "node tests/oauth-browser.test.cjs",
+    "test:cloudflare": "node cloudflare/prepare.mjs && node tests/cloudflare-runtime.test.mjs"
   },
   "repository": {
     "type": "git",
@@ -38,7 +39,8 @@
   },
   "devDependencies": {
     "esbuild": "0.28.2",
-    "playwright": "1.64.1"
+    "playwright": "1.64.1",
+    "wrangler": "4.156.0"
   },
   "engines": {
     "node": ">=24"

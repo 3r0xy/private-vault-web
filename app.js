@@ -3986,7 +3986,7 @@ export async function restoreSession() {
       } finally { button.disabled = false; }
     };
     if (new URL(location.href).searchParams.has("auth")) {
-      history.replaceState(null, "", "/");
+      window.history.replaceState(null, "", "/");
       els.loginError.textContent = "GitHub не завершил вход. Повтори вход и проверь, что выбран разрешённый аккаунт и выдан доступ к vault.";
     }
     await check();

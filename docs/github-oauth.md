@@ -1,15 +1,22 @@
 # Вход в Luna через GitHub
 
-Реализация готова для размещения, но сама регистрация GitHub OAuth App и сервер
-ещё нужны. Вход не считается запущенным, пока не проверен на настоящем HTTPS-адресе.
-Ни тесты, ни установка backend не меняют `my-vault`.
+Luna развёрнута на бесплатном Cloudflare Workers:
+https://luna-private-vault.k-media-circle.workers.dev/
+
+OAuth App зарегистрирован в аккаунте 3r0xy. Настоящий вход и восстановление
+сессии после обновления страницы проверены. По явному запросу пользователя
+редактирование и сохранение включены (`VAULT_WRITE_ENABLED=true`). Настройка
+и проверки не изменяли заметки в `my-private-vault`.
+
+Фактическое имя приватного репозитория подтверждено через GitHub и пользователем:
+`3r0xy/my-private-vault`. Имя `my-vault` в исходном описании было неточным.
 
 ## Что изменилось
 
 В серверной версии вместо owner / repository / token показывается «Войти через GitHub».
 Backend на Node.js 24 одновременно отдаёт Luna и обслуживает `/auth/*`, `/api/github/*`.
 Фронтенд не получает GitHub access token, refresh token или client secret.
-Настройки vault задаются один раз на сервере: `3r0xy/my-vault`.
+Настройки vault задаются один раз на сервере: `3r0xy/my-private-vault`.
 
 GitHub Pages остаётся рабочим резервным вариантом с прежним входом по PAT.
 На нём показано, что OAuth требует серверную версию. Нет поддельной работающей
@@ -34,7 +41,7 @@ WebKit блокирует сторонние cookies. Эта реализаци�
 
 Для приватных файлов OAuth App запрашивает **`repo`**. Этот scope даёт широкие права
 на доступные пользователю публичные и приватные репозитории, включая запись.
-У OAuth App нет scope «только чтение только my-vault». `public_repo`, `read:user`
+У OAuth App нет scope «только чтение только my-private-vault». `public_repo`, `read:user`
 или отсутствие scope не решают доступ к приватным заметкам.
 
 Backend ограничивает маршруты одним настроенным vault и проверяет неизменяемый
@@ -45,7 +52,7 @@ Backend ограничивает маршруты одним настроенн�
 с его ключом создаёт риск для всех прав scope `repo`.
 
 Если такие права неприемлемы, используйте **GitHub App** с установкой только на
-`my-vault`, `Contents: Read-only` (или `Read and write` для редактора), Metadata: Read.
+`my-private-vault`, `Contents: Read-only` (или `Read and write` для редактора), Metadata: Read.
 Это отдельный адаптер авторизации/установки, не настройка OAuth App и не реализован
 в этой ветке. Не регистрируйте GitHub App вместо OAuth App, ожидая совместимости.
 
@@ -113,6 +120,40 @@ workers требуют общей транзакционной сессии и �
 `PUBLIC_ORIGIN=http://127.0.0.1:8787`, `ALLOW_HTTP_LOCALHOST=true`,
 `SESSION_DB=./data/sessions.sqlite`, затем `npm start`. Используйте только loopback;
 локальная cookie без `Secure` не предназначена для публичного сервера.
+
+## Бесплатное размещение Cloudflare Workers
+
+Добавлен адаптер `cloudflare/worker.mjs` и конфигурация `wrangler.jsonc`.
+Приложение и API обслуживаются одним Worker на адресе `workers.dev`; свой домен
+и VPS не обязательны. Защищённые сессии сохраняются в SQLite Durable Object,
+а не в временной файловой системе Worker. Один Durable Object координирует
+обновление refresh token для всех экземпляров. Используется тот же код OAuth,
+шифрования и ограничений API, что в серверной версии.
+
+Cloudflare поддерживает SQLite Durable Objects на Workers Free. При исчерпании
+лимитов бесплатного тарифа запросы завершаются ошибкой; переходить на платный
+тариф для личной Luna не требуется. Доступность зависит также от сети пользователя.
+
+1. `npm ci`, затем `npx wrangler login --use-keyring` (Windows потребует официальный
+   адаптер `@napi-rs/keyring`). Для публикации нужны account:read, user:read,
+   workers:write и workers_scripts:write. Остальные scopes не добавляйте без причины.
+2. `npx wrangler deploy` публикует закрытую заготовку. Production не читает `.dev.vars`.
+   Пока обязательные параметры не настроены, Worker возвращает 503 и не начинает OAuth.
+3. Укажите реальный `PUBLIC_ORIGIN` и Client ID в переменных Worker, Client Secret
+   и `TOKEN_ENCRYPTION_KEY` — только в зашифрованных Secrets Cloudflare. Новый ключ:
+   32 криптографически случайных байта в hex. Не вводите секреты в аргументы CLI.
+4. Callback OAuth App: `<PUBLIC_ORIGIN>/auth/callback`, без wildcard.
+5. Оставьте `VAULT_WRITE_ENABLED=false` до проверки чтения. Бесплатный тариф не
+   требует включения записи. Включение редактора выполняется отдельной настройкой.
+
+Сборка копирует только явный список публичных файлов в `work/worker-assets`.
+Исходники backend, `.env`, тестовые ключи, база сессий и Git-метаданные туда не
+попадают. Observability и preview URLs выключены. OAuth start ограничен 20
+попытками за 10 минут на хеш адреса клиента. Ежедневный alarm удаляет истёкшие
+сессии и одноразовые flow. Секреты локальной проверки — искусственные и не публикуются.
+
+[Условия Workers Free](https://developers.cloudflare.com/workers/platform/pricing/)
+и [SQLite Durable Objects Free](https://developers.cloudflare.com/durable-objects/platform/pricing/).
 
 ## Сессии, токены и устройства
 

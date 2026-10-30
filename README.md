@@ -2,11 +2,15 @@
 
 Приватные заметки и планер с хранением в GitHub.
 
+Рабочий адрес с OAuth: https://luna-private-vault.k-media-circle.workers.dev/
+Подключён `3r0xy/my-private-vault`; редактирование включено по запросу владельца.
+
 ## Вход через GitHub OAuth
 
 Добавлена серверная версия: кнопка «Войти через GitHub», защищённая cookie сессии,
 зашифрованное хранение токенов на backend и proxy только к настроенному vault.
-Нужен Node.js 24, постоянный диск и один HTTPS-адрес для приложения и API.
+Поддерживаются Node.js 24 с постоянным диском и бесплатный Cloudflare Workers
+с SQLite Durable Object. Приложение и API работают на одном HTTPS-адресе.
 На GitHub Pages сохранён прежний резервный вход; OAuth на одном Pages не работает.
 
 Пошаговая регистрация OAuth App, размещение backend, ограничения `repo`,
