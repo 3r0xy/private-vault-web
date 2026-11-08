@@ -687,10 +687,14 @@ function saveFolderColors() {
   try { localStorage.setItem(folderColorStorageKey(), JSON.stringify(state.folderColors || {})); } catch {}
 }
 
-function requestFolderColor(path) {
+function requestFolderColor(path, anchor) {
   state.folderColorTarget = normalizeRepoPath(path || "");
   if (!state.folderColorTarget || !els.folderColorInput) return;
   els.folderColorInput.value = state.folderColors[state.folderColorTarget] || "#f5bdd0";
+  // Native color dialogs are anchored to the input, even when it is transparent.
+  const rect = anchor?.getBoundingClientRect();
+  els.folderColorInput.style.setProperty("--picker-left", `${Math.max(12, Math.min(rect?.left ?? 24, window.innerWidth - 300))}px`);
+  els.folderColorInput.style.setProperty("--picker-top", `${Math.max(12, Math.min(rect?.bottom ?? 80, window.innerHeight - 320))}px`);
   try {
     if (typeof els.folderColorInput.showPicker === "function") els.folderColorInput.showPicker();
     else els.folderColorInput.click();
@@ -923,7 +927,7 @@ function renderFileList(filter = "") {
           { label: "Переместить…", action: () => moveFolderPrompt(folder.path) },
           { label: "Скопировать путь", action: () => copyRepoPath(folder.path) },
           { separator: true },
-          { label: "Цвет папки…", action: () => requestFolderColor(folder.path) },
+          { label: "Цвет папки…", action: () => requestFolderColor(folder.path, row) },
           ...(state.folderColors[folder.path] ? [{ label: "Сбросить цвет", action: () => resetFolderColor(folder.path) }] : []),
           { separator: true },
           { label: "Удалить папку", danger: true, action: () => deleteFolder(folder.path) },
@@ -2844,6 +2848,13 @@ async function buildGraph(forceReload = false) {
         if (!nodesMap.has(target)) nodesMap.set(target, { id:target,path:null,label:target.split("/").pop(),missing:true,degree:0 });
         links.push({source,target});
       }
+    }
+
+    // Saved weeks form one chronological chain, including weeks added later.
+    const weeks = all.map(n => n.path).filter(p => /^planner\/weeks\/\d{4}-\d{2}-\d{2}\.md$/.test(p)).sort();
+    for (let i = 1; i < weeks.length; i++) {
+      const source = weeks[i - 1].replace(/\.md$/, ""), target = weeks[i].replace(/\.md$/, "");
+      if (!links.some(l => (l.source === source && l.target === target) || (l.source === target && l.target === source))) links.push({source, target});
     }
 
     for (const edge of links) {

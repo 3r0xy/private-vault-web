@@ -78,8 +78,24 @@ async function main(){
     await page.locator('.folder-row').filter({hasText:'Заметки'}).click();
     await page.reload();await page.waitForFunction(()=>window.__test && !document.querySelector('#appView').classList.contains('hidden'));
     assert.equal(await page.locator('.folder-row.open').filter({hasText:'Заметки'}).count(),1,'folder state persists for this vault');
+    await page.evaluate(()=>{HTMLInputElement.prototype.showPicker=function(){window.__pickerRect=this.getBoundingClientRect().toJSON();};});
+    for (const width of [1440,390]) {
+      await page.setViewportSize({width,height:950});
+      if (width<800) { await page.locator('#menuBtn').click(); await page.clock.runFor(500); }
+      await page.locator('.folder-row').filter({hasText:'Заметки'}).click({button:'right'});
+      await page.getByRole('button',{name:'Цвет папки…',exact:true}).click();
+      const rect=await page.evaluate(()=>window.__pickerRect);
+      assert.ok(rect.x>=0 && rect.x+rect.width<=width && rect.y>=0 && rect.y+rect.height<=950,'native color input stays on screen');
+    }
+    await page.setViewportSize({width:1440,height:950});
     await page.locator('#graphModeBtn').click();await page.waitForFunction(()=>window.__test.state.graph.links.length>=2);
     assert.ok(await page.locator('.graph-link').count()>=2);console.log('PASS graph renders linked saved notes');
+    const weekEdges=()=>page.evaluate(()=>window.__test.state.graph.links.map(l=>[l.source.id||l.source,l.target.id||l.target]).filter(e=>e.every(x=>x.startsWith('planner/weeks/'))));
+    assert.deepEqual(await weekEdges(),[['planner/weeks/2026-10-05','planner/weeks/2026-10-12']]);
+    setFile('planner/weeks/2026-12-07.md',week('2026-12-07',[]));snapshot();
+    await page.evaluate(()=>window.__test.buildGraph(true));
+    assert.deepEqual(await weekEdges(),[['planner/weeks/2026-10-05','planner/weeks/2026-10-12'],['planner/weeks/2026-10-12','planner/weeks/2026-12-07']]);
+    console.log('PASS existing and newly saved weeks form a chronological graph chain');
     failRef=true;
     const failure=await page.evaluate(()=>window.__test.relocateFolder('Проекты','Новая').then(()=>false,()=>true));
     assert.equal(failure,true);assert.ok(files.has('Проекты/План.md'));assert.ok(!files.has('Новая/План.md'));failRef=false;
