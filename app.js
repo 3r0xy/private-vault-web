@@ -231,6 +231,31 @@ function syncActiveTabText(text = null) {
   if (tab.dirty && !dot) { const d=document.createElement("span"); d.className="tab-dirty"; d.textContent="●"; el?.insertBefore(d, el.querySelector(".tab-close")); }
   if (!tab.dirty && dot) dot.remove();
   updateTabLabel(tab);
+  scheduleNoteAutosave(tab);
+}
+
+const noteSaveTimers = new Map();
+let noteSaveQueue = Promise.resolve();
+function scheduleNoteAutosave(tab) {
+  clearTimeout(noteSaveTimers.get(tab));
+  noteSaveTimers.delete(tab);
+  if (!tab?.dirty || (tab.isNew && !tab.text.trim()) || (oauthMode && !oauthSession?.writeEnabled)) return;
+  setSyncStatus("Изменения · автосохранение…");
+  noteSaveTimers.set(tab, setTimeout(() => { noteSaveTimers.delete(tab); saveNoteDraft(tab, true); }, 1500));
+}
+function syncSecondaryDraft(text = getSecondaryMarkdown()) {
+  const tab = state.secondary.draft;
+  if (!tab) return;
+  tab.text = text;
+  tab.dirty = text !== tab.savedText;
+  scheduleNoteAutosave(tab);
+}
+async function flushNoteAutosaves() {
+  captureActiveTab();
+  if (state.secondary.draft) syncSecondaryDraft();
+  const drafts = [...state.tabs, state.secondary.draft].filter(Boolean);
+  await Promise.all(drafts.filter(t => t.dirty || t.savePromise).map(t => saveNoteDraft(t, true)));
+  return !drafts.some(t => t.dirty || t.savePromise);
 }
 
 function captureActiveTab() {
@@ -437,7 +462,9 @@ async function closeTab(id) {
   const idx = state.tabs.findIndex(t => t.id === id);
   if (idx < 0) return;
   const tab = state.tabs[idx];
+  if (tab.savePromise) await tab.savePromise;
   if (tab.dirty && !confirm(`Закрыть «${noteName(tab.path || "Новая заметка.md")}» без сохранения?`)) return;
+  clearTimeout(noteSaveTimers.get(tab)); noteSaveTimers.delete(tab);
   const wasActive = id === state.activeTabId;
   state.tabs.splice(idx, 1);
   if (wasActive) {
@@ -626,6 +653,11 @@ function setSplitOrientation(orientation) {
 }
 
 function closeSplit() {
+  if (state.secondary.draft?.dirty || state.secondary.draft?.savePromise) {
+    saveSecondary().then(() => { if (!state.secondary.draft?.dirty && !state.secondary.draft?.savePromise) closeSplit(); });
+    return;
+  }
+  state.secondary.draft = null;
   state.activePane = "primary";
   els.primaryPane.classList.add("pane-active");
   els.secondaryPane.classList.remove("pane-active");
@@ -1534,6 +1566,7 @@ function initSecondaryLiveEditor() {
         if (update.docChanged) {
           const value = update.state.doc.toString();
           els.secondaryEditorText.value = value;
+          syncSecondaryDraft(value);
         }
       }),
       EditorView.domEventHandlers({
@@ -1621,7 +1654,12 @@ function showSecondaryEditor() {
 async function openInSplit(path, orientation = "vertical", resetOrientation = true) {
   setMode("notes");
   try {
+    if (state.secondary.draft?.dirty || state.secondary.draft?.savePromise) {
+      await saveSecondary();
+      if (state.secondary.draft?.dirty) throw new Error("Сначала сохрани изменения второй области.");
+    }
     const item = await getFile(path);
+    state.secondary.draft = {path,sha:item.sha,text:item.text,savedText:item.text,dirty:false,isNew:false};
     state.secondary.path = path;
     state.secondary.sha = item.sha;
     state.activePane = "secondary";
@@ -1767,7 +1805,7 @@ function showEditor() {
   els.previewBtn.classList.remove("active");
 }
 
-async function persistMarkdownFile({ path, oldPath, currentSha, markdownText }) {
+async function persistMarkdownFile({ path, oldPath, currentSha, markdownText, automatic = false }) {
   if (!path) throw new Error("Укажи путь файла.");
   if (!path.toLowerCase().endsWith(".md")) path += ".md";
 
@@ -1777,6 +1815,7 @@ async function persistMarkdownFile({ path, oldPath, currentSha, markdownText }) 
       const existing = await gh(`/repos/${encodeURIComponent(state.owner)}/${encodeURIComponent(state.repo)}/contents/${encodePath(path)}?ref=${encodeURIComponent(state.branch)}`);
       if (existing && existing.type === "file" && existing.sha) {
         if (oldPath !== path) {
+          if (automatic) throw new Error("Файл с таким именем уже существует. Сохрани вручную под другим именем.");
           const overwrite = confirm(`Файл ${path} уже существует в vault. Заменить его текущим содержимым?`);
           if (!overwrite) throw new Error("Сохранение отменено — выбери другое имя файла.");
         }
@@ -1812,89 +1851,73 @@ async function persistMarkdownFile({ path, oldPath, currentSha, markdownText }) 
 }
 
 async function saveCurrent() {
-  const markdownText = getEditorMarkdown();
-  const tab = activeTab();
-  let requestedPath = (els.pathInput.value.trim() || tab?.path || "").trim();
-  if (tab?.isNew) {
-    const title = firstLineTitle(markdownText);
-    if (title) {
-      const folder = folderOf(requestedPath);
-      const safeBase = title.replace(/[\\/:*?"<>|#\[\]]/g, "-").replace(/\s+/g, " ").trim().slice(0, 100) || "Новая заметка";
-      const prefix = folder ? `${folder}/` : "";
-      let candidate = `${prefix}${safeBase}.md`;
-      let n = 2;
-      const occupied = p => state.files.some(f => f.path.toLowerCase() === p.toLowerCase()) || state.tabs.some(t => t.id !== tab.id && t.path?.toLowerCase() === p.toLowerCase());
-      while (occupied(candidate)) candidate = `${prefix}${safeBase} ${n++}.md`;
-      requestedPath = candidate;
-      tab.path = candidate;
-      els.pathInput.value = candidate;
-    }
-  }
-  const oldPath = tab && !tab.isNew ? tab.path : null;
-  const currentSha = tab?.sha || null;
-  try {
-    setSyncStatus("Сохранение…");
-    const saved = await persistMarkdownFile({
-      path: requestedPath, oldPath, currentSha, markdownText,
-    });
-    state.current = saved.path;
-    state.currentSha = saved.sha;
-    if (tab) {
-      tab.path = saved.path;
-      tab.sha = saved.sha;
-      tab.text = markdownText;
-      tab.savedText = markdownText;
-      tab.isNew = false;
-      tab.unloaded = false;
-      tab.dirty = false;
-    }
-    updatePrimaryPathUI(saved.path);
-    updateActiveNoteTitle(saved.path);
-    state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
-    const fileEntry = { path: saved.path, sha: saved.sha, type: "blob" };
-    const fileIndex = state.files.findIndex(f => f.path === saved.path);
-    if (fileIndex >= 0) state.files[fileIndex] = { ...state.files[fileIndex], ...fileEntry };
-    else state.files.push(fileEntry);
-    if (!state.notes.some(n => n.path === saved.path)) state.notes.push(fileEntry);
-    try { await loadTree(); } catch (treeError) { console.warn("Tree refresh after save failed", treeError); renderFileList(els.searchInput.value); }
-    state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
-    await Promise.all([renderBacklinks(saved.path), renderOutgoing(markdownText)]);
-    renderTabs();
-    persistTabsWorkspace();
-    setSyncStatus("Сохранено");
-    showToast("Сохранено в GitHub.");
-  } catch (e) {
-    setSyncStatus("Ошибка сохранения");
-    showToast(`Не сохранено: ${e.message}`);
-  }
+  syncActiveTabText();
+  return saveNoteDraft(activeTab(), false);
 }
 
 async function saveSecondary() {
-  if (!state.secondary.path && !els.secondaryPathInput.value.trim()) return;
-  const markdownText = getSecondaryMarkdown();
-  try {
-    setSyncStatus("Сохранение второй области…");
-    const saved = await persistMarkdownFile({
-      path: els.secondaryPathInput.value.trim(), oldPath: state.secondary.path, currentSha: state.secondary.sha, markdownText,
-    });
-    state.secondary.path = saved.path;
-    state.secondary.sha = saved.sha;
-    updateSecondaryPathUI(saved.path);
-    els.secondaryNoteTitle.textContent = noteName(saved.path);
-    state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
-    const fileEntry = { path: saved.path, sha: saved.sha, type: "blob" };
-    const fileIndex = state.files.findIndex(f => f.path === saved.path);
-    if (fileIndex >= 0) state.files[fileIndex] = { ...state.files[fileIndex], ...fileEntry };
-    else state.files.push(fileEntry);
-    if (!state.notes.some(n => n.path === saved.path)) state.notes.push(fileEntry);
-    try { await loadTree(); } catch (treeError) { console.warn("Tree refresh after secondary save failed", treeError); renderFileList(els.searchInput.value); }
-    state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
-    setSyncStatus("Сохранено");
-    showToast("Вторая область сохранена в GitHub.");
-  } catch (e) {
-    setSyncStatus("Ошибка сохранения");
-    showToast(`Не сохранено: ${e.message}`);
+  syncSecondaryDraft();
+  return saveNoteDraft(state.secondary.draft, false);
+}
+
+async function saveNoteDraft(tab, automatic = true) {
+  if (!tab) return;
+  clearTimeout(noteSaveTimers.get(tab)); noteSaveTimers.delete(tab);
+  if (tab.savePromise) {
+    await tab.savePromise;
+    if (tab.dirty && !tab.saveFailed) return saveNoteDraft(tab, automatic);
+    return;
   }
+  if (!tab.dirty || (automatic && tab.isNew && !tab.text.trim())) return;
+  const account = `${state.owner}/${state.repo}`;
+  const operation = noteSaveQueue.then(async () => {
+    if (account !== `${state.owner}/${state.repo}`) return;
+    if (!state.tabs.includes(tab) && state.secondary.draft !== tab) return;
+    const markdownText = tab.text;
+    let requestedPath = tab.path;
+    if (tab.isNew) {
+      const title = firstLineTitle(markdownText);
+      if (title) {
+        const safeBase = title.replace(/[\\/:*?"<>|#\[\]]/g, "-").trim().slice(0,100) || "Новая заметка";
+        const prefix = folderOf(requestedPath) ? `${folderOf(requestedPath)}/` : "";
+        requestedPath = `${prefix}${safeBase}.md`;
+        let n = 2;
+        while (state.files.some(f => f.path.toLowerCase() === requestedPath.toLowerCase()) || state.tabs.some(t => t !== tab && t.path?.toLowerCase() === requestedPath.toLowerCase())) requestedPath = `${prefix}${safeBase} ${n++}.md`;
+      }
+    }
+    try {
+      tab.saveFailed = false;
+      setSyncStatus("Сохранение…");
+      const saved = await persistMarkdownFile({path:requestedPath, oldPath:tab.isNew ? null : tab.path, currentSha:tab.sha, markdownText, automatic});
+      tab.path = saved.path; tab.sha = saved.sha; tab.savedText = markdownText;
+      tab.isNew = false; tab.unloaded = false; tab.dirty = tab.text !== markdownText;
+      if (activeTab() === tab) {
+        state.current = saved.path; state.currentSha = saved.sha;
+        updatePrimaryPathUI(saved.path); updateActiveNoteTitle(saved.path);
+      }
+      if (state.secondary.draft === tab) {
+        state.secondary.path = saved.path; state.secondary.sha = saved.sha;
+        updateSecondaryPathUI(saved.path); els.secondaryNoteTitle.textContent = noteName(saved.path);
+      }
+      state.contents.set(saved.path, {text:markdownText,sha:saved.sha});
+      const fileEntry = {path:saved.path,sha:saved.sha,type:"blob"};
+      const fileIndex = state.files.findIndex(f => f.path === saved.path);
+      if (fileIndex >= 0) state.files[fileIndex] = {...state.files[fileIndex],...fileEntry};
+      else state.files.push(fileEntry);
+      if (!state.notes.some(n => n.path === saved.path)) state.notes.push(fileEntry);
+      renderFileList(els.searchInput.value); renderTabs(); persistTabsWorkspace();
+      setSyncStatus(tab.dirty ? "Изменения · автосохранение…" : "Сохранено");
+      if (!automatic) showToast("Сохранено в GitHub.");
+      if (tab.dirty) scheduleNoteAutosave(tab);
+    } catch (e) {
+      tab.saveFailed = true;
+      setSyncStatus("Не сохранено · повторить: Ctrl+S");
+      showToast(`Не сохранено: ${e.message}. Текст остаётся открытым.`);
+    }
+  });
+  tab.savePromise = operation;
+  noteSaveQueue = operation.catch(() => {});
+  try { await operation; } finally { tab.savePromise = null; }
 }
 
 function suggestedNewNotePath() {
@@ -2203,6 +2226,7 @@ async function duplicateNoteFile(path) {
 
 async function performNoteRelocation(oldPath, newPath, copy = false) {
   try {
+    if (!(await flushNoteAutosaves())) throw new Error("Сначала сохрани открытые изменения.");
     setSyncStatus(copy ? "Копирование…" : "Перемещение…");
     const finalPath = await relocateFile(oldPath, newPath, { copy });
     const primaryWas = state.current === oldPath;
@@ -2231,6 +2255,7 @@ async function performNoteRelocation(oldPath, newPath, copy = false) {
 async function deleteNoteFile(path) {
   if (!confirm(`Удалить заметку «${noteName(path)}»? Это удалит файл из vault.`)) return;
   try {
+    if (!(await flushNoteAutosaves())) throw new Error("Сначала сохрани открытые изменения.");
     const file = existingFile(path); if (!file) throw new Error("Файл не найден.");
     await deleteRepoFile(path, file.sha, `Delete ${path}`);
     const tabToRemove = state.tabs.find(t => t.path === path);
@@ -2289,6 +2314,7 @@ async function relocateFolder(oldFolder, newFolder) {
   oldFolder = normalizeRepoPath(oldFolder); newFolder = normalizeRepoPath(newFolder);
   if (!oldFolder || !newFolder || oldFolder === newFolder) return;
   captureActiveTab();
+  if (!(await flushNoteAutosaves())) throw new Error("Сначала сохрани открытые изменения.");
   await plannerFlush();
   await loadTree();
   const entries = folderMoveEntries(state.files, oldFolder, newFolder);
@@ -3761,6 +3787,7 @@ async function plannerOpenMarkdown() {
 
 
 async function logout() {
+  if (!(await flushNoteAutosaves())) { showToast("Выход остановлен: есть несохранённые заметки."); return; }
   if (oauthMode) {
     try { await endSession(); }
     catch { showToast("Не удалось выйти. Проверь соединение и повтори выход."); }
@@ -3780,8 +3807,11 @@ const taskHub = createTaskHub({
   plannerCurrentWeekStart, plannerDateFromYmd, plannerRender,
 });
 window.addEventListener("beforeunload", e => {
-  if (state.planner.dirty || state.planner.savePromise || taskHub.busy) { e.preventDefault(); e.returnValue = ""; }
+  if (state.tabs.some(t => t.dirty || t.savePromise) || state.secondary.draft?.dirty || state.secondary.draft?.savePromise || state.planner.dirty || state.planner.savePromise || taskHub.busy) { e.preventDefault(); e.returnValue = ""; }
 });
+window.addEventListener("online", () => { flushNoteAutosaves(); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flushNoteAutosaves(); });
+els.secondaryEditorText.addEventListener("input", () => { if (state.secondary.mode === "raw") syncSecondaryDraft(els.secondaryEditorText.value); });
 
 els.connectBtn.onclick = connect;
 els.searchInput.oninput = e => renderFileList(e.target.value);
