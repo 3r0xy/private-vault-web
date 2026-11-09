@@ -1,3 +1,4 @@
+[hidden] { display: none !important; }
 /* note v1.5 — стили редактора и недельного Планера.
    CSS разделён комментариями, чтобы безопаснее менять отдельные части UI. */
 
@@ -596,8 +597,8 @@ button.crumb:hover { color: var(--text); background: var(--panel-3); }
 }
 .color-picker-proxy {
   position: fixed !important;
-  left: -100px !important;
-  top: -100px !important;
+  left: var(--picker-left, 24px) !important;
+  top: var(--picker-top, 80px) !important;
   width: 1px !important;
   height: 1px !important;
   opacity: 0 !important;

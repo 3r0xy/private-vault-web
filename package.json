@@ -1,7 +1,7 @@
 {
   "name": "private-vault-web",
   "version": "1.0.0",
-  "description": "Luna — private GitHub vault",
+  "description": "Luna вЂ” private GitHub vault",
   "private": true,
   "license": "UNLICENSED",
   "main": "app.js",
@@ -13,7 +13,11 @@
     "build": "node scripts/build-vendor.mjs",
     "test": "node --test tests/domain.test.mjs",
     "test:login": "node tests/login.test.cjs",
-    "test:browser": "node tests/browser.test.cjs"
+    "test:browser": "node tests/browser.test.cjs",
+    "start": "node --env-file-if-exists=.env server/start.mjs",
+    "test:oauth": "node --test tests/oauth.test.mjs",
+    "test:oauth-browser": "node tests/oauth-browser.test.cjs",
+    "test:cloudflare": "node cloudflare/prepare.mjs && node tests/cloudflare-runtime.test.mjs"
   },
   "repository": {
     "type": "git",
@@ -35,6 +39,10 @@
   },
   "devDependencies": {
     "esbuild": "0.28.2",
-    "playwright": "1.64.1"
+    "playwright": "1.64.1",
+    "wrangler": "4.156.0"
+  },
+  "engines": {
+    "node": ">=24"
   }
 }

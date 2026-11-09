@@ -1,3 +1,4 @@
+import { oauthMode, session as oauthSession, loadSession, startLogin, endSession } from "./auth.mjs";
 import { resolveNote, noteLinks, folderMoveEntries, mergeWeekTasks, rewriteFolderLinks } from "./domain.mjs";
 import { createTaskHub } from "./task-hub.mjs";
 /*
@@ -7,7 +8,7 @@ import { createTaskHub } from "./task-hub.mjs";
  * - GitHub API хранит заметки и planner/*.md в приватном vault.
  * - CodeMirror отвечает за Live Preview/Markdown-редактор.
  * - Планер является представлением Markdown, а не отдельной базой данных.
- * - Данные авторизации не зашиты в исходники: токен вводится пользователем.
+ * - Данные авторизации не зашиты в исходники: OAuth-токен хранит backend; GitHub Pages сохраняет прежний резервный вход.
  *
  * Основные блоки файла помечены комментариями ниже, чтобы будущие правки
  * было проще вносить без нарушения уже работающих функций.
@@ -19,7 +20,7 @@ import * as d3 from "./vendor/d3.js";
 console.info("note v1.5 planner loaded");
 
 // ---------- GitHub / глобальное состояние приложения ----------
-const API = "https://api.github.com";
+const API = oauthMode ? "/api/github" : "https://api.github.com";
 const state = {
   token: "",
   owner: "",
@@ -121,7 +122,7 @@ try {
 function headers(extra = {}) {
   return {
     "Accept": "application/vnd.github+json",
-    "Authorization": `Bearer ${state.token}`,
+    ...(oauthMode ? (oauthSession?.csrf ? { "X-Luna-CSRF": oauthSession.csrf } : {}) : { "Authorization": `Bearer ${state.token}` }),
     "X-GitHub-Api-Version": "2022-11-28",
     ...extra,
   };
@@ -131,10 +132,18 @@ async function gh(path, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
-    options = { cache: "no-store", signal: controller.signal, ...options };
+    if (oauthMode && options.method && options.method !== "GET" && !oauthSession?.writeEnabled) {
+      throw Object.assign(new Error("Vault открыт только для чтения. Запись может включить владелец сервера Luna."), { status: 403 });
+    }
+    options = { cache: "no-store", credentials: "same-origin", signal: controller.signal, ...options };
     const res = await fetch(`${API}${path}`, { ...options, headers: headers(options.headers || {}) });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
+      if (oauthMode && res.status === 401) {
+        els.appView.classList.add("hidden");
+        els.loginView.classList.remove("hidden");
+        els.loginError.textContent = "Сессия истекла или доступ отозван. Войди через GitHub снова.";
+      }
       const error = new Error(data.message || `${res.status} ${res.statusText}`);
       error.status = res.status;
       throw error;
@@ -222,6 +231,31 @@ function syncActiveTabText(text = null) {
   if (tab.dirty && !dot) { const d=document.createElement("span"); d.className="tab-dirty"; d.textContent="●"; el?.insertBefore(d, el.querySelector(".tab-close")); }
   if (!tab.dirty && dot) dot.remove();
   updateTabLabel(tab);
+  scheduleNoteAutosave(tab);
+}
+
+const noteSaveTimers = new Map();
+let noteSaveQueue = Promise.resolve();
+function scheduleNoteAutosave(tab) {
+  clearTimeout(noteSaveTimers.get(tab));
+  noteSaveTimers.delete(tab);
+  if (!tab?.dirty || (tab.isNew && !tab.text.trim()) || (oauthMode && !oauthSession?.writeEnabled)) return;
+  setSyncStatus("Изменения · автосохранение…");
+  noteSaveTimers.set(tab, setTimeout(() => { noteSaveTimers.delete(tab); saveNoteDraft(tab, true); }, 1500));
+}
+function syncSecondaryDraft(text = getSecondaryMarkdown()) {
+  const tab = state.secondary.draft;
+  if (!tab) return;
+  tab.text = text;
+  tab.dirty = text !== tab.savedText;
+  scheduleNoteAutosave(tab);
+}
+async function flushNoteAutosaves() {
+  captureActiveTab();
+  if (state.secondary.draft) syncSecondaryDraft();
+  const drafts = [...state.tabs, state.secondary.draft].filter(Boolean);
+  await Promise.all(drafts.filter(t => t.dirty || t.savePromise).map(t => saveNoteDraft(t, true)));
+  return !drafts.some(t => t.dirty || t.savePromise);
 }
 
 function captureActiveTab() {
@@ -428,7 +462,9 @@ async function closeTab(id) {
   const idx = state.tabs.findIndex(t => t.id === id);
   if (idx < 0) return;
   const tab = state.tabs[idx];
+  if (tab.savePromise) await tab.savePromise;
   if (tab.dirty && !confirm(`Закрыть «${noteName(tab.path || "Новая заметка.md")}» без сохранения?`)) return;
+  clearTimeout(noteSaveTimers.get(tab)); noteSaveTimers.delete(tab);
   const wasActive = id === state.activeTabId;
   state.tabs.splice(idx, 1);
   if (wasActive) {
@@ -617,6 +653,11 @@ function setSplitOrientation(orientation) {
 }
 
 function closeSplit() {
+  if (state.secondary.draft?.dirty || state.secondary.draft?.savePromise) {
+    saveSecondary().then(() => { if (!state.secondary.draft?.dirty && !state.secondary.draft?.savePromise) closeSplit(); });
+    return;
+  }
+  state.secondary.draft = null;
   state.activePane = "primary";
   els.primaryPane.classList.add("pane-active");
   els.secondaryPane.classList.remove("pane-active");
@@ -678,10 +719,14 @@ function saveFolderColors() {
   try { localStorage.setItem(folderColorStorageKey(), JSON.stringify(state.folderColors || {})); } catch {}
 }
 
-function requestFolderColor(path) {
+function requestFolderColor(path, anchor) {
   state.folderColorTarget = normalizeRepoPath(path || "");
   if (!state.folderColorTarget || !els.folderColorInput) return;
   els.folderColorInput.value = state.folderColors[state.folderColorTarget] || "#f5bdd0";
+  // Native color dialogs are anchored to the input, even when it is transparent.
+  const rect = anchor?.getBoundingClientRect();
+  els.folderColorInput.style.setProperty("--picker-left", `${Math.max(12, Math.min(rect?.left ?? 24, window.innerWidth - 300))}px`);
+  els.folderColorInput.style.setProperty("--picker-top", `${Math.max(12, Math.min(rect?.bottom ?? 80, window.innerHeight - 320))}px`);
   try {
     if (typeof els.folderColorInput.showPicker === "function") els.folderColorInput.showPicker();
     else els.folderColorInput.click();
@@ -726,11 +771,11 @@ function removeFolderColors(folder) {
 async function connect() {
   if (els.connectBtn.disabled) return;
   els.loginError.textContent = "";
-  state.owner = els.ownerInput.value.trim();
-  state.repo = els.repoInput.value.trim();
-  state.token = els.tokenInput.value.trim();
+  state.owner = oauthMode ? oauthSession?.owner : els.ownerInput.value.trim();
+  state.repo = oauthMode ? oauthSession?.repo : els.repoInput.value.trim();
+  state.token = oauthMode ? "" : els.tokenInput.value.trim();
 
-  if (!state.owner || !state.repo || !state.token) {
+  if (!state.owner || !state.repo || (!oauthMode && !state.token)) {
     els.loginError.textContent = "Заполни owner, repository и token.";
     return;
   }
@@ -743,14 +788,14 @@ async function connect() {
     state.branch = repo.default_branch || "main";
 
     els.vaultTitle.textContent = "luna";
-    els.branchStatus.textContent = state.branch;
+    els.branchStatus.textContent = state.branch + (oauthMode && !oauthSession.writeEnabled ? " · только чтение" : "");
     loadFolderColors();
     state._expandedLoaded = false;
     await loadTree();
 
     // Storage may be denied by the browser; keep the active session in memory.
-    let sessionSaved = false;
-    try {
+    let sessionSaved = oauthMode;
+    if (!oauthMode) try {
       sessionStorage.setItem("pv_owner", state.owner);
       sessionStorage.setItem("pv_repo", state.repo);
       sessionStorage.setItem("pv_token", state.token);
@@ -770,7 +815,7 @@ async function connect() {
       409: "В репозитории пока нет файлов или доступной ветки. Проверь его на GitHub.",
       429: "Слишком много запросов к GitHub. Подожди немного и повтори вход.",
     };
-    const reason = messages[e.status] || (e.status >= 500
+    const reason = (oauthMode && e.status ? e.message : messages[e.status]) || (e.status >= 500
       ? "GitHub временно недоступен. Повтори вход позже."
       : e.name === "AbortError"
         ? "GitHub не ответил за 15 секунд. Проверь соединение и повтори вход."
@@ -914,7 +959,7 @@ function renderFileList(filter = "") {
           { label: "Переместить…", action: () => moveFolderPrompt(folder.path) },
           { label: "Скопировать путь", action: () => copyRepoPath(folder.path) },
           { separator: true },
-          { label: "Цвет папки…", action: () => requestFolderColor(folder.path) },
+          { label: "Цвет папки…", action: () => requestFolderColor(folder.path, row) },
           ...(state.folderColors[folder.path] ? [{ label: "Сбросить цвет", action: () => resetFolderColor(folder.path) }] : []),
           { separator: true },
           { label: "Удалить папку", danger: true, action: () => deleteFolder(folder.path) },
@@ -1521,6 +1566,7 @@ function initSecondaryLiveEditor() {
         if (update.docChanged) {
           const value = update.state.doc.toString();
           els.secondaryEditorText.value = value;
+          syncSecondaryDraft(value);
         }
       }),
       EditorView.domEventHandlers({
@@ -1608,7 +1654,12 @@ function showSecondaryEditor() {
 async function openInSplit(path, orientation = "vertical", resetOrientation = true) {
   setMode("notes");
   try {
+    if (state.secondary.draft?.dirty || state.secondary.draft?.savePromise) {
+      await saveSecondary();
+      if (state.secondary.draft?.dirty) throw new Error("Сначала сохрани изменения второй области.");
+    }
     const item = await getFile(path);
+    state.secondary.draft = {path,sha:item.sha,text:item.text,savedText:item.text,dirty:false,isNew:false};
     state.secondary.path = path;
     state.secondary.sha = item.sha;
     state.activePane = "secondary";
@@ -1754,7 +1805,7 @@ function showEditor() {
   els.previewBtn.classList.remove("active");
 }
 
-async function persistMarkdownFile({ path, oldPath, currentSha, markdownText }) {
+async function persistMarkdownFile({ path, oldPath, currentSha, markdownText, automatic = false }) {
   if (!path) throw new Error("Укажи путь файла.");
   if (!path.toLowerCase().endsWith(".md")) path += ".md";
 
@@ -1764,14 +1815,14 @@ async function persistMarkdownFile({ path, oldPath, currentSha, markdownText }) 
       const existing = await gh(`/repos/${encodeURIComponent(state.owner)}/${encodeURIComponent(state.repo)}/contents/${encodePath(path)}?ref=${encodeURIComponent(state.branch)}`);
       if (existing && existing.type === "file" && existing.sha) {
         if (oldPath !== path) {
+          if (automatic) throw new Error("Файл с таким именем уже существует. Сохрани вручную под другим именем.");
           const overwrite = confirm(`Файл ${path} уже существует в vault. Заменить его текущим содержимым?`);
           if (!overwrite) throw new Error("Сохранение отменено — выбери другое имя файла.");
         }
         targetSha = existing.sha;
       }
     } catch (lookupError) {
-      const msg = String(lookupError?.message || "");
-      if (!/not found/i.test(msg)) throw lookupError;
+      if (lookupError.status !== 404) throw lookupError;
     }
   }
 
@@ -1799,89 +1850,73 @@ async function persistMarkdownFile({ path, oldPath, currentSha, markdownText }) 
 }
 
 async function saveCurrent() {
-  const markdownText = getEditorMarkdown();
-  const tab = activeTab();
-  let requestedPath = (els.pathInput.value.trim() || tab?.path || "").trim();
-  if (tab?.isNew) {
-    const title = firstLineTitle(markdownText);
-    if (title) {
-      const folder = folderOf(requestedPath);
-      const safeBase = title.replace(/[\\/:*?"<>|#\[\]]/g, "-").replace(/\s+/g, " ").trim().slice(0, 100) || "Новая заметка";
-      const prefix = folder ? `${folder}/` : "";
-      let candidate = `${prefix}${safeBase}.md`;
-      let n = 2;
-      const occupied = p => state.files.some(f => f.path.toLowerCase() === p.toLowerCase()) || state.tabs.some(t => t.id !== tab.id && t.path?.toLowerCase() === p.toLowerCase());
-      while (occupied(candidate)) candidate = `${prefix}${safeBase} ${n++}.md`;
-      requestedPath = candidate;
-      tab.path = candidate;
-      els.pathInput.value = candidate;
-    }
-  }
-  const oldPath = tab && !tab.isNew ? tab.path : null;
-  const currentSha = tab?.sha || null;
-  try {
-    setSyncStatus("Сохранение…");
-    const saved = await persistMarkdownFile({
-      path: requestedPath, oldPath, currentSha, markdownText,
-    });
-    state.current = saved.path;
-    state.currentSha = saved.sha;
-    if (tab) {
-      tab.path = saved.path;
-      tab.sha = saved.sha;
-      tab.text = markdownText;
-      tab.savedText = markdownText;
-      tab.isNew = false;
-      tab.unloaded = false;
-      tab.dirty = false;
-    }
-    updatePrimaryPathUI(saved.path);
-    updateActiveNoteTitle(saved.path);
-    state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
-    const fileEntry = { path: saved.path, sha: saved.sha, type: "blob" };
-    const fileIndex = state.files.findIndex(f => f.path === saved.path);
-    if (fileIndex >= 0) state.files[fileIndex] = { ...state.files[fileIndex], ...fileEntry };
-    else state.files.push(fileEntry);
-    if (!state.notes.some(n => n.path === saved.path)) state.notes.push(fileEntry);
-    try { await loadTree(); } catch (treeError) { console.warn("Tree refresh after save failed", treeError); renderFileList(els.searchInput.value); }
-    state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
-    await Promise.all([renderBacklinks(saved.path), renderOutgoing(markdownText)]);
-    renderTabs();
-    persistTabsWorkspace();
-    setSyncStatus("Сохранено");
-    showToast("Сохранено в GitHub.");
-  } catch (e) {
-    setSyncStatus("Ошибка сохранения");
-    showToast(`Не сохранено: ${e.message}`);
-  }
+  syncActiveTabText();
+  return saveNoteDraft(activeTab(), false);
 }
 
 async function saveSecondary() {
-  if (!state.secondary.path && !els.secondaryPathInput.value.trim()) return;
-  const markdownText = getSecondaryMarkdown();
-  try {
-    setSyncStatus("Сохранение второй области…");
-    const saved = await persistMarkdownFile({
-      path: els.secondaryPathInput.value.trim(), oldPath: state.secondary.path, currentSha: state.secondary.sha, markdownText,
-    });
-    state.secondary.path = saved.path;
-    state.secondary.sha = saved.sha;
-    updateSecondaryPathUI(saved.path);
-    els.secondaryNoteTitle.textContent = noteName(saved.path);
-    state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
-    const fileEntry = { path: saved.path, sha: saved.sha, type: "blob" };
-    const fileIndex = state.files.findIndex(f => f.path === saved.path);
-    if (fileIndex >= 0) state.files[fileIndex] = { ...state.files[fileIndex], ...fileEntry };
-    else state.files.push(fileEntry);
-    if (!state.notes.some(n => n.path === saved.path)) state.notes.push(fileEntry);
-    try { await loadTree(); } catch (treeError) { console.warn("Tree refresh after secondary save failed", treeError); renderFileList(els.searchInput.value); }
-    state.contents.set(saved.path, { text: markdownText, sha: saved.sha });
-    setSyncStatus("Сохранено");
-    showToast("Вторая область сохранена в GitHub.");
-  } catch (e) {
-    setSyncStatus("Ошибка сохранения");
-    showToast(`Не сохранено: ${e.message}`);
+  syncSecondaryDraft();
+  return saveNoteDraft(state.secondary.draft, false);
+}
+
+async function saveNoteDraft(tab, automatic = true) {
+  if (!tab) return;
+  clearTimeout(noteSaveTimers.get(tab)); noteSaveTimers.delete(tab);
+  if (tab.savePromise) {
+    await tab.savePromise;
+    if (tab.dirty && !tab.saveFailed) return saveNoteDraft(tab, automatic);
+    return;
   }
+  if (!tab.dirty || (automatic && tab.isNew && !tab.text.trim())) return;
+  const account = `${state.owner}/${state.repo}`;
+  const operation = noteSaveQueue.then(async () => {
+    if (account !== `${state.owner}/${state.repo}`) return;
+    if (!state.tabs.includes(tab) && state.secondary.draft !== tab) return;
+    const markdownText = tab.text;
+    let requestedPath = tab.path;
+    if (tab.isNew) {
+      const title = firstLineTitle(markdownText);
+      if (title) {
+        const safeBase = title.replace(/[\\/:*?"<>|#\[\]]/g, "-").trim().slice(0,100) || "Новая заметка";
+        const prefix = folderOf(requestedPath) ? `${folderOf(requestedPath)}/` : "";
+        requestedPath = `${prefix}${safeBase}.md`;
+        let n = 2;
+        while (state.files.some(f => f.path.toLowerCase() === requestedPath.toLowerCase()) || state.tabs.some(t => t !== tab && t.path?.toLowerCase() === requestedPath.toLowerCase())) requestedPath = `${prefix}${safeBase} ${n++}.md`;
+      }
+    }
+    try {
+      tab.saveFailed = false;
+      setSyncStatus("Сохранение…");
+      const saved = await persistMarkdownFile({path:requestedPath, oldPath:tab.isNew ? null : tab.path, currentSha:tab.sha, markdownText, automatic});
+      tab.path = saved.path; tab.sha = saved.sha; tab.savedText = markdownText;
+      tab.isNew = false; tab.unloaded = false; tab.dirty = tab.text !== markdownText;
+      if (activeTab() === tab) {
+        state.current = saved.path; state.currentSha = saved.sha;
+        updatePrimaryPathUI(saved.path); updateActiveNoteTitle(saved.path);
+      }
+      if (state.secondary.draft === tab) {
+        state.secondary.path = saved.path; state.secondary.sha = saved.sha;
+        updateSecondaryPathUI(saved.path); els.secondaryNoteTitle.textContent = noteName(saved.path);
+      }
+      state.contents.set(saved.path, {text:markdownText,sha:saved.sha});
+      const fileEntry = {path:saved.path,sha:saved.sha,type:"blob"};
+      const fileIndex = state.files.findIndex(f => f.path === saved.path);
+      if (fileIndex >= 0) state.files[fileIndex] = {...state.files[fileIndex],...fileEntry};
+      else state.files.push(fileEntry);
+      if (!state.notes.some(n => n.path === saved.path)) state.notes.push(fileEntry);
+      renderFileList(els.searchInput.value); renderTabs(); persistTabsWorkspace();
+      setSyncStatus(tab.dirty ? "Изменения · автосохранение…" : "Сохранено");
+      if (!automatic) showToast("Сохранено в GitHub.");
+      if (tab.dirty) scheduleNoteAutosave(tab);
+    } catch (e) {
+      tab.saveFailed = true;
+      setSyncStatus("Не сохранено · повторить: Ctrl+S");
+      showToast(`Не сохранено: ${e.message}. Текст остаётся открытым.`);
+    }
+  });
+  tab.savePromise = operation;
+  noteSaveQueue = operation.catch(() => {});
+  try { await operation; } finally { tab.savePromise = null; }
 }
 
 function suggestedNewNotePath() {
@@ -2190,6 +2225,7 @@ async function duplicateNoteFile(path) {
 
 async function performNoteRelocation(oldPath, newPath, copy = false) {
   try {
+    if (!(await flushNoteAutosaves())) throw new Error("Сначала сохрани открытые изменения.");
     setSyncStatus(copy ? "Копирование…" : "Перемещение…");
     const finalPath = await relocateFile(oldPath, newPath, { copy });
     const primaryWas = state.current === oldPath;
@@ -2218,6 +2254,7 @@ async function performNoteRelocation(oldPath, newPath, copy = false) {
 async function deleteNoteFile(path) {
   if (!confirm(`Удалить заметку «${noteName(path)}»? Это удалит файл из vault.`)) return;
   try {
+    if (!(await flushNoteAutosaves())) throw new Error("Сначала сохрани открытые изменения.");
     const file = existingFile(path); if (!file) throw new Error("Файл не найден.");
     await deleteRepoFile(path, file.sha, `Delete ${path}`);
     const tabToRemove = state.tabs.find(t => t.path === path);
@@ -2276,6 +2313,7 @@ async function relocateFolder(oldFolder, newFolder) {
   oldFolder = normalizeRepoPath(oldFolder); newFolder = normalizeRepoPath(newFolder);
   if (!oldFolder || !newFolder || oldFolder === newFolder) return;
   captureActiveTab();
+  if (!(await flushNoteAutosaves())) throw new Error("Сначала сохрани открытые изменения.");
   await plannerFlush();
   await loadTree();
   const entries = folderMoveEntries(state.files, oldFolder, newFolder);
@@ -2835,6 +2873,13 @@ async function buildGraph(forceReload = false) {
         if (!nodesMap.has(target)) nodesMap.set(target, { id:target,path:null,label:target.split("/").pop(),missing:true,degree:0 });
         links.push({source,target});
       }
+    }
+
+    // Saved weeks form one chronological chain, including weeks added later.
+    const weeks = all.map(n => n.path).filter(p => /^planner\/weeks\/\d{4}-\d{2}-\d{2}\.md$/.test(p)).sort();
+    for (let i = 1; i < weeks.length; i++) {
+      const source = weeks[i - 1].replace(/\.md$/, ""), target = weeks[i].replace(/\.md$/, "");
+      if (!links.some(l => (l.source === source && l.target === target) || (l.source === target && l.target === source))) links.push({source, target});
     }
 
     for (const edge of links) {
@@ -3740,7 +3785,13 @@ async function plannerOpenMarkdown() {
 }
 
 
-function logout() {
+async function logout() {
+  if (!(await flushNoteAutosaves())) { showToast("Выход остановлен: есть несохранённые заметки."); return; }
+  if (oauthMode) {
+    try { await endSession(); }
+    catch { showToast("Не удалось выйти. Проверь соединение и повтори выход."); }
+    return;
+  }
   try {
     sessionStorage.removeItem("pv_owner");
     sessionStorage.removeItem("pv_repo");
@@ -3755,8 +3806,11 @@ const taskHub = createTaskHub({
   plannerCurrentWeekStart, plannerDateFromYmd, plannerRender,
 });
 window.addEventListener("beforeunload", e => {
-  if (state.planner.dirty || state.planner.savePromise || taskHub.busy) { e.preventDefault(); e.returnValue = ""; }
+  if (state.tabs.some(t => t.dirty || t.savePromise) || state.secondary.draft?.dirty || state.secondary.draft?.savePromise || state.planner.dirty || state.planner.savePromise || taskHub.busy) { e.preventDefault(); e.returnValue = ""; }
 });
+window.addEventListener("online", () => { flushNoteAutosaves(); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flushNoteAutosaves(); });
+els.secondaryEditorText.addEventListener("input", () => { if (state.secondary.mode === "raw") syncSecondaryDraft(els.secondaryEditorText.value); });
 
 els.connectBtn.onclick = connect;
 els.searchInput.oninput = e => renderFileList(e.target.value);
@@ -3942,7 +3996,42 @@ window.addEventListener("resize", () => {
   }
 });
 
-export function restoreSession() {
+export async function restoreSession() {
+  if (oauthMode) {
+    $("legacyLogin").hidden = true;
+    $("githubLoginBtn").hidden = false;
+    $("oauthNotice").textContent = "Войди через GitHub. Сессия сохранится на этом устройстве. GitHub запросит доступ repo к приватным репозиториям; Luna использует только настроенный vault.";
+    // Remove legacy credentials from this origin, including browser-restored sessions.
+    try { sessionStorage.removeItem("pv_token"); } catch {}
+    els.tokenInput.value = "";
+    const button = $("githubLoginBtn");
+    const check = async () => {
+      button.disabled = true;
+      try {
+        const session = await loadSession();
+        if (session.authenticated) await connect();
+      } catch {
+        els.loginError.textContent = "Не удалось проверить сессию Luna. Проверь соединение и нажми кнопку входа ещё раз.";
+      } finally { button.disabled = false; }
+    };
+    button.onclick = async () => {
+      button.disabled = true;
+      els.loginError.textContent = "";
+      try {
+        const session = await loadSession();
+        if (session.authenticated) await connect();
+        else await startLogin();
+      } catch (error) {
+        els.loginError.textContent = error.message;
+      } finally { button.disabled = false; }
+    };
+    if (new URL(location.href).searchParams.has("auth")) {
+      window.history.replaceState(null, "", "/");
+      els.loginError.textContent = "GitHub не завершил вход. Повтори вход и проверь, что выбран разрешённый аккаунт и выдан доступ к vault.";
+    }
+    await check();
+    return;
+  }
   try {
     const owner = sessionStorage.getItem("pv_owner");
     const repo = sessionStorage.getItem("pv_repo");
@@ -3957,4 +4046,19 @@ export function restoreSession() {
 }
 
 console.info("luna ready");
+
+if (oauthMode) {
+  // Recheck sessions after returning from the background; do not expose a cached editor.
+  window.addEventListener("pageshow", event => { if (event.persisted) location.reload(); });
+  document.addEventListener("visibilitychange", async () => {
+    if (document.visibilityState !== "visible" || els.appView.classList.contains("hidden")) return;
+    const expired = () => {
+      els.appView.classList.add("hidden");
+      els.loginView.classList.remove("hidden");
+      els.loginError.textContent = "Сессия истекла или доступ отозван. Войди через GitHub снова.";
+    };
+    try { if (!(await loadSession()).authenticated) expired(); }
+    catch (error) { if (error.status === 401) expired(); }
+  });
+}
 

@@ -6,7 +6,7 @@ const root=path.resolve(__dirname,'..');
 const sha=text=>crypto.createHash('sha1').update(text).digest('hex');
 const week=(start,tasks)=>`# Week\n<!-- NOTE_PLANNER_STATE:${Buffer.from(JSON.stringify({version:1,weekStart:start,tasks})).toString('base64')} -->\n`;
 const files=new Map(),blobs=new Map(),trees=new Map(),commits=new Map();
-let revision=0,head='',failPut=false,failRef=false;
+let revision=0,head='',failPut=false,failRef=false,holdPut=null;
 function blob(text){const key=sha(text);blobs.set(key,text);return key;}
 function setFile(name,text){files.set(name,{path:name,type:'blob',mode:'100644',sha:blob(text),size:Buffer.byteLength(text)});}
 function snapshot(parent=head){const tree='tree-'+(++revision);trees.set(tree,new Map([...files].map(([k,v])=>[k,{...v}])));head='commit-'+revision;commits.set(head,{sha:head,tree:{sha:tree},parents:[parent]});}
@@ -22,7 +22,7 @@ const server=http.createServer((req,res)=>{
   const target=path.resolve(root,name);
   if (!target.startsWith(root+path.sep) || !fs.existsSync(target)) {res.writeHead(404);return res.end();}
   let body=fs.readFileSync(target);
-  if(name==='app.js') body=Buffer.from(body.toString()+`\nwindow.__test={state,els,relocateFolder,plannerOpenWeek,plannerFlush,plannerFinalizeWeek,plannerParse,plannerSerialize,taskHub,buildGraph};`);
+  if(name==='app.js') body=Buffer.from(body.toString()+`\nwindow.__test={state,els,relocateFolder,plannerOpenWeek,plannerFlush,plannerFinalizeWeek,plannerParse,plannerSerialize,taskHub,buildGraph,openNote,openInSplit,saveCurrent,flushNoteAutosaves};`);
   res.setHeader('Content-Type',name.endsWith('.html')?'text/html; charset=utf-8':name.endsWith('.css')?'text/css':/\.(mjs|js)$/.test(name)?'text/javascript':'application/octet-stream');res.end(body);
 });
 async function api(route){
@@ -49,8 +49,9 @@ async function api(route){
   }
   if(endpoint.startsWith('/contents/')){
     const name=endpoint.slice('/contents/'.length),entry=files.get(name);
-    if(method==='GET')return entry?send({type:'file',sha:entry.sha,content:Buffer.from(blobs.get(entry.sha)).toString('base64')}):send({message:'Not Found'},404);
+    if(method==='GET')return entry?send({type:'file',sha:entry.sha,content:Buffer.from(blobs.get(entry.sha)).toString('base64')}):send({message:'Файл или ветка не найдены.'},404);
     if(method==='PUT'){
+      if(holdPut) await holdPut;
       if(failPut)return send({message:'Test save failure'},503);
       if(entry && entry.sha!==body.sha)return send({message:'SHA conflict'},409);
       setFile(name,Buffer.from(body.content,'base64').toString('utf8'));snapshot();return send({content:{sha:files.get(name).sha}},201);
@@ -78,8 +79,78 @@ async function main(){
     await page.locator('.folder-row').filter({hasText:'Заметки'}).click();
     await page.reload();await page.waitForFunction(()=>window.__test && !document.querySelector('#appView').classList.contains('hidden'));
     assert.equal(await page.locator('.folder-row.open').filter({hasText:'Заметки'}).count(),1,'folder state persists for this vault');
+    await page.evaluate(()=>{HTMLInputElement.prototype.showPicker=function(){window.__pickerRect=this.getBoundingClientRect().toJSON();};});
+    for (const width of [1440,390]) {
+      await page.setViewportSize({width,height:950});
+      if (width<800) { await page.locator('#menuBtn').click(); await page.clock.runFor(500); }
+      await page.locator('.folder-row').filter({hasText:'Заметки'}).click({button:'right'});
+      await page.getByRole('button',{name:'Цвет папки…',exact:true}).click();
+      const rect=await page.evaluate(()=>window.__pickerRect);
+      assert.ok(rect.x>=0 && rect.x+rect.width<=width && rect.y>=0 && rect.y+rect.height<=950,'native color input stays on screen');
+    }
+    await page.setViewportSize({width:1440,height:950});
+    await page.locator('#newTabBtn').click();
+    await page.locator('#editBtn').click();
+    const newDraft='# Новая заметка с картинкой\n\n![Пример](attachments/example.png)\nТекст черновика';
+    await page.locator('#editorText').fill(newDraft);
+    await page.clock.runFor(1700);
+    await page.waitForFunction(()=>window.__test.state.tabs.some(t=>t.text.includes('Текст черновика')&&!t.isNew&&!t.dirty));
+    const created=[...files.keys()].find(p=>p.endsWith('Новая заметка с картинкой.md'));
+    assert.ok(created,'localized 404 lookup must allow new note creation');
+    assert.equal(blobs.get(files.get(created).sha),newDraft);
+    await page.locator('#editorText').fill(newDraft+'\nДополнение');
+    await page.clock.runFor(1700);await page.evaluate(()=>window.__test.flushNoteAutosaves());
+    assert.equal(blobs.get(files.get(created).sha),newDraft+'\nДополнение');
+    console.log('PASS new note creation after localized 404, image Markdown and subsequent autosave');
+    await page.evaluate(()=>window.__test.openNote('Заметки/Идея.md'));
+    await page.locator('#editBtn').click();
+    await page.locator('#editorText').fill('# Автосохранение\nПервая версия');
+    await page.clock.runFor(1700);
+    await page.waitForFunction(()=>!window.__test.state.tabs.find(t=>t.path==='Заметки/Идея.md').dirty);
+    assert.ok(blobs.get(files.get('Заметки/Идея.md').sha).includes('Первая версия'));
+    let releasePut; holdPut=new Promise(resolve=>{releasePut=resolve;});
+    await page.locator('#editorText').fill('# Автосохранение\nМедленная версия');
+    await page.clock.runFor(1700);
+    await page.waitForFunction(()=>!!window.__test.state.tabs.find(t=>t.path==='Заметки/Идея.md').savePromise);
+    await page.locator('#editorText').fill('# Автосохранение\nПоследняя версия');
+    await page.evaluate(()=>window.__test.openNote('Проекты/План.md'));
+    holdPut=null;releasePut();
+    await page.clock.runFor(1700);
+    await page.evaluate(()=>window.__test.flushNoteAutosaves());
+    assert.ok(blobs.get(files.get('Заметки/Идея.md').sha).includes('Последняя версия'));
+    assert.equal(await page.locator('#pathInput').inputValue(),'Проекты/План.md','background save must not switch active note');
+    failPut=true;
+    await page.locator('#editBtn').click();await page.locator('#editorText').fill('# Сбой сети\nЧерновик не потерян');
+    await page.clock.runFor(1700);
+    await page.waitForFunction(()=>window.__test.state.tabs.find(t=>t.path==='Проекты/План.md').saveFailed);
+    assert.equal(await page.locator('#editorText').inputValue(),'# Сбой сети\nЧерновик не потерян');
+    failPut=false;await page.evaluate(()=>window.__test.flushNoteAutosaves());
+    assert.ok(blobs.get(files.get('Проекты/План.md').sha).includes('Черновик не потерян'));
+    await page.evaluate(()=>window.__test.openInSplit('Заметки/Идея.md'));
+    await page.locator('#secondaryEditBtn').click();await page.locator('#secondaryEditorText').fill('# Вторая область\nАвтосохранено');
+    await page.clock.runFor(1700);await page.evaluate(()=>window.__test.flushNoteAutosaves());
+    assert.ok(blobs.get(files.get('Заметки/Идея.md').sha).includes('Автосохранено'));
+    setFile('Проекты/План.md','# Изменено с другого устройства');snapshot();
+    await page.locator('#editorText').fill('# Моя несохранённая версия');
+    await page.clock.runFor(1700);
+    await page.waitForFunction(()=>window.__test.state.tabs.find(t=>t.path==='Проекты/План.md').saveFailed);
+    assert.equal(blobs.get(files.get('Проекты/План.md').sha),'# Изменено с другого устройства','conflict must not overwrite another device');
+    assert.equal(await page.locator('#editorText').inputValue(),'# Моя несохранённая версия');
+    // Discard only the artificial conflict draft so fixture reload can proceed.
+    await page.evaluate(()=>{const t=window.__test.state.tabs.find(t=>t.path==='Проекты/План.md');t.dirty=false;t.text=t.savedText;});
+    // Restore fixture links before graph and move checks.
+    setFile('Заметки/Идея.md','# Идея\n[[План|мой план]]\n[План](../Проекты/План.md)');
+    setFile('Проекты/План.md','# План\n[[Заметки/Идея]]');snapshot();
+    await page.reload();await page.waitForFunction(()=>window.__test && !document.querySelector('#appView').classList.contains('hidden'));
+    console.log('PASS note autosave, edits in flight, tab switching, network retry and second pane');
     await page.locator('#graphModeBtn').click();await page.waitForFunction(()=>window.__test.state.graph.links.length>=2);
     assert.ok(await page.locator('.graph-link').count()>=2);console.log('PASS graph renders linked saved notes');
+    const weekEdges=()=>page.evaluate(()=>window.__test.state.graph.links.map(l=>[l.source.id||l.source,l.target.id||l.target]).filter(e=>e.every(x=>x.startsWith('planner/weeks/'))));
+    assert.deepEqual(await weekEdges(),[['planner/weeks/2026-10-05','planner/weeks/2026-10-12']]);
+    setFile('planner/weeks/2026-12-07.md',week('2026-12-07',[]));snapshot();
+    await page.evaluate(()=>window.__test.buildGraph(true));
+    assert.deepEqual(await weekEdges(),[['planner/weeks/2026-10-05','planner/weeks/2026-10-12'],['planner/weeks/2026-10-12','planner/weeks/2026-12-07']]);
+    console.log('PASS existing and newly saved weeks form a chronological graph chain');
     failRef=true;
     const failure=await page.evaluate(()=>window.__test.relocateFolder('Проекты','Новая').then(()=>false,()=>true));
     assert.equal(failure,true);assert.ok(files.has('Проекты/План.md'));assert.ok(!files.has('Новая/План.md'));failRef=false;
