@@ -31,6 +31,7 @@ async function fixture(t, change = {}) {
     if (url === 'https://api.github.com/user') return Response.json({ id: provider.userId });
     assert.ok(url.startsWith('https://api.github.com/repos/3r0xy/my-vault'));
     if (provider.api401) return Response.json({ message: 'fixture-token' }, { status: 401 });
+    if (provider.api404) return Response.json({ message: 'Not Found' }, { status: 404 });
     return Response.json(url.endsWith('my-vault') ? { default_branch: 'main' } : { content: 'fixture-note', sha: 'a'.repeat(40) });
   };
   let handler;
@@ -58,6 +59,14 @@ async function fixture(t, change = {}) {
   }
   return { store, config, calls, provider, request, start, finish, login, advance: ms => { time += ms; } };
 }
+
+test('missing-file responses remain compatible with already-open autosave clients', async t => {
+  const f = await fixture(t), {cookie} = await f.login();
+  f.provider.api404 = true;
+  const response = await f.request('/api/github/repos/3r0xy/my-vault/contents/New.md?ref=main', {headers:{Cookie:cookie}});
+  assert.equal(response.status,404);
+  assert.match((await response.json()).message,/not found/i);
+});
 
 test('OAuth code + PKCE + bound state, session cookie and private proxy; no credentials returned', async t => {
   const f = await fixture(t), flow = await f.start();

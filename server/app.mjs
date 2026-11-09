@@ -187,7 +187,7 @@ export function createApp(config, store, { fetchImpl = fetch, now = Date.now, re
         const response = await github(target, await fresh(id, value), { method: req.method, body: payload });
         if (response.status === 401) { store.remove(id); throw httpError(401, 'GitHub отозвал доступ. Войди снова.'); }
         if (!response.ok) return json(response.status, { message: ({ 403: 'GitHub запретил доступ или исчерпан лимит запросов.',
-          404: 'Файл или ветка не найдены.', 409: 'Конфликт версий. Обнови файл перед сохранением.', 422: 'GitHub отклонил изменение.' })[response.status] || 'GitHub временно недоступен.' });
+          404: 'Файл или ветка не найдены (Not Found).', 409: 'Конфликт версий. Обнови файл перед сохранением.', 422: 'GitHub отклонил изменение.' })[response.status] || 'GitHub временно недоступен.' });
         if (response.status === 204) { res.writeHead(204); return res.end(); }
         // Forward JSON only; no upstream headers, cookies, redirects or errors reach the client.
         return json(response.status, vaultData(await response.json()));

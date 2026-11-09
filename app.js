@@ -1822,8 +1822,7 @@ async function persistMarkdownFile({ path, oldPath, currentSha, markdownText, au
         targetSha = existing.sha;
       }
     } catch (lookupError) {
-      const msg = String(lookupError?.message || "");
-      if (!/not found/i.test(msg)) throw lookupError;
+      if (lookupError.status !== 404) throw lookupError;
     }
   }
 

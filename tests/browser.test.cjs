@@ -49,7 +49,7 @@ async function api(route){
   }
   if(endpoint.startsWith('/contents/')){
     const name=endpoint.slice('/contents/'.length),entry=files.get(name);
-    if(method==='GET')return entry?send({type:'file',sha:entry.sha,content:Buffer.from(blobs.get(entry.sha)).toString('base64')}):send({message:'Not Found'},404);
+    if(method==='GET')return entry?send({type:'file',sha:entry.sha,content:Buffer.from(blobs.get(entry.sha)).toString('base64')}):send({message:'Файл или ветка не найдены.'},404);
     if(method==='PUT'){
       if(holdPut) await holdPut;
       if(failPut)return send({message:'Test save failure'},503);
@@ -89,6 +89,19 @@ async function main(){
       assert.ok(rect.x>=0 && rect.x+rect.width<=width && rect.y>=0 && rect.y+rect.height<=950,'native color input stays on screen');
     }
     await page.setViewportSize({width:1440,height:950});
+    await page.locator('#newTabBtn').click();
+    await page.locator('#editBtn').click();
+    const newDraft='# Новая заметка с картинкой\n\n![Пример](attachments/example.png)\nТекст черновика';
+    await page.locator('#editorText').fill(newDraft);
+    await page.clock.runFor(1700);
+    await page.waitForFunction(()=>window.__test.state.tabs.some(t=>t.text.includes('Текст черновика')&&!t.isNew&&!t.dirty));
+    const created=[...files.keys()].find(p=>p.endsWith('Новая заметка с картинкой.md'));
+    assert.ok(created,'localized 404 lookup must allow new note creation');
+    assert.equal(blobs.get(files.get(created).sha),newDraft);
+    await page.locator('#editorText').fill(newDraft+'\nДополнение');
+    await page.clock.runFor(1700);await page.evaluate(()=>window.__test.flushNoteAutosaves());
+    assert.equal(blobs.get(files.get(created).sha),newDraft+'\nДополнение');
+    console.log('PASS new note creation after localized 404, image Markdown and subsequent autosave');
     await page.evaluate(()=>window.__test.openNote('Заметки/Идея.md'));
     await page.locator('#editBtn').click();
     await page.locator('#editorText').fill('# Автосохранение\nПервая версия');
